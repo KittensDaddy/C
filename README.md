@@ -11,3 +11,6 @@ ToDO
 - stealth mode
 - screensaver
 - no wlan0 always
+- clean up code
+- properly handle each function
+- crack wpa upload
