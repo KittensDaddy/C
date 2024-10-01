@@ -96,6 +96,7 @@ options = [
     {"name": "Select Interface", "state": selected_interface, "command": ""},
     {"name": "Deauth", "state": False, "command": "--no-wps --no-pmkid"},
     {"name": "PIXIE", "state": False, "command": "--wps-only --pixie"},
+    {"name": "WPS Time", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(60, 300, 10)]},
     {"name": "Deauth+PIXIE", "state": False, "command": "--no-pmkid --pixie"},
     {"name": "PMKID", "state": False, "command": "--no-wps --pmkid"},
     {"name": "No PMKID", "state": False, "command": "--no-pmkid"},
@@ -139,6 +140,12 @@ def toggle_option(selection):
         current_index = option["values"].index(option["state"])
         option["state"] = option["values"][(current_index + 1) % len(option["values"])]
         option["command"] = f"-p {option['state']}" if option["state"] != "Off" else ""
+        
+    # Special case for "WPS Time" option
+    elif option['name'] == "WPS Time":
+        current_index = option["values"].index(option["state"])
+        option["state"] = option["values"][(current_index + 1) % len(option["values"])]
+        option["command"] = f"--wps-time {option['state']}" if option["state"] != "Off" else ""
 
     # Special case for "Deauth sec" option
     elif option['name'] == "Deauth sec":
@@ -204,6 +211,9 @@ def display_file_on_lcd(filename):
 def display_message_with_wrap(message, append=False):
     if not append:  # If not appending, clear the screen
         draw.rectangle((0, 0, width, height), outline=0, fill=0)
+
+    # Remove ASCII color codes
+    message = re.sub(r'\x1B\[[0-?9;]*[mK]', '', message)  # ANSI escape code for colors
 
     # Maximum characters that fit on one line
     max_chars_per_line = width // 10  # Approximation (depends on font size)
@@ -271,7 +281,7 @@ def build_and_run_command():
                         break
                     if output:
                         output_stripped = output.strip()
-                        print(f"Raw Output: {output_stripped}")  # Debugging line to show raw output
+                        display_message_with_wrap(f"Raw Output: {output_stripped}")  # Debugging line to show raw output
 
                         # Check for "Starting attacks against" message
                         if "Starting attacks against" in output_stripped:
