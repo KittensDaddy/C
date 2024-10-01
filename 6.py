@@ -1,9 +1,10 @@
-0# -*- coding:utf-8 -*-
+# -*- coding:utf-8 -*-
 import LCD_1in44
 import os
 import time
 import RPi.GPIO as GPIO
 import subprocess
+import threading
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -69,7 +70,7 @@ def essid_selection_menu():
 def get_wireless_interfaces():
     try:
         interfaces = []
-        output = subprocess.check_output(['iwconfig'], text=True).splitlines()
+        output = subprocess.check_output(['/usr/sbin/iwconfig'], text=True).splitlines()
         for line in output:
             if "IEEE 802.11" in line:  # This indicates a wireless interface
                 interface_name = line.split()[0]
@@ -119,6 +120,7 @@ def display_message(message):
     draw.rectangle((0, 0, width, height), outline=0, fill=0)
     draw.text((10, 10), message, font=font, fill=(255, 255, 255))
     disp.LCD_ShowImage(image, 0, 0)
+    time.sleep(2) 
 
 # Handle option toggling and updating command
 def toggle_option(selection):
@@ -204,7 +206,7 @@ def display_message_with_wrap(message, append=False):
         draw.rectangle((0, 0, width, height), outline=0, fill=0)
 
     # Maximum characters that fit on one line
-    max_chars_per_line = width // 6  # Approximation (depends on font size)
+    max_chars_per_line = width // 10  # Approximation (depends on font size)
 
     # Split message into lines
     words = message.split()
@@ -234,7 +236,6 @@ def display_message_with_wrap(message, append=False):
 
 import re
 
-# Build and run the Wifite command or show cracked.json if the option is selected
 def build_and_run_command():
     if any(option["name"] == "Show Cracked" and option["state"] for option in options):
         display_message("Showing: cracked.json")
@@ -257,46 +258,48 @@ def build_and_run_command():
 
         # Execute the command and handle the output
         try:
+            # Redirect stdout and stderr to avoid IO errors
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             # Initialize a buffer for scrolling output
             output_lines = []
-            scroll_start = 0
 
-            while True:
-                output = process.stdout.readline()
-                if output == '' and process.poll() is not None:
-                    break
-                if output:
-                    output_stripped = output.strip()
-                    print(f"Raw Output: {output_stripped}")  # Debugging line to show raw output
+            def read_output():
+                while True:
+                    output = process.stdout.readline()
+                    if output == '' and process.poll() is not None:
+                        break
+                    if output:
+                        output_stripped = output.strip()
+                        print(f"Raw Output: {output_stripped}")  # Debugging line to show raw output
 
+                        # Check for "Starting attacks against" message
+                        if "Starting attacks against" in output_stripped:
+                            essid_match = re.search(r'Starting attacks against (.+?) \((.*?)\)$', output_stripped)
+                            if essid_match:
+                                mac_address = essid_match.group(1).strip()  # Get the MAC address
+                                display_message_with_wrap(f"Attack on {mac_address}")  # Display the MAC address
+                                time.sleep(1)
 
-                    # Capture and filter output with regex (as per your original code)
-                    matches = re.findall(r'\x1b\[[0-9;]*m.*?Found.*?\x1b\[[0-9;]*m(\d+).*?target\(s\).*?\x1b\[[0-9;]*m(\d+).*?client\(s\)', output_stripped)
+                        # Handle any other output or messages from Wifite
+                        matches = re.findall(r'\x1b\[[0-9;]*m.*?Found.*?\x1b\[[0-9;]*m(\d+).*?target\(s\).*?\x1b\[[0-9;]*m(\d+).*?client\(s\)', output_stripped)
 
-                    for match in matches:
-                        if match:
-                            target_count, client_count = match
-                            output_lines.append(f"{target_count} target, {client_count} client")
+                        for match in matches:
+                            if match:
+                                target_count, client_count = match
+                                output_lines.append(f"{target_count} target, {client_count} client")
 
-                            # Clear the display before showing the new message
-                            disp.LCD_Clear()
-                            display_message_with_wrap(output_lines[-1])  # Display the latest match
+                                # Clear the display before showing the new message
+                                disp.LCD_Clear()
+                                display_message_with_wrap(output_lines[-1])  # Display the latest match
 
-                            # Ensure scrolling logic is handled
-                            if len(output_lines) > 8:
-                                scroll_start += 1  # Scroll down
-                                output_lines.pop(0)  # Remove the oldest line to maintain a maximum of 8 lines
+                    time.sleep(0.1)  # Control the scrolling speed
 
-                            # Ensure scrolling logic is handled
-                            if scroll_start < len(output_lines):
-                                visible_lines = output_lines[scroll_start:scroll_start + 8]
-                                if visible_lines:  # Check if there are visible lines to show
-                                    disp.LCD_Clear()  # Clear display before updating
-                                    display_message_with_wrap("\n".join(visible_lines))  # Append new lines
+            output_thread = threading.Thread(target=read_output)
+            output_thread.start()
 
-                time.sleep(0.1)  # Control the scrolling speed
+            process.wait()  # Wait for the process to complete
+            output_thread.join()  # Ensure output is read completely
 
             # Capture stderr output after the command finishes
             stderr_output = process.stderr.read()
@@ -307,6 +310,8 @@ def build_and_run_command():
 
         except Exception as e:
             display_message(f"Error: {e}")
+
+
 
 
 
@@ -394,4 +399,12 @@ def menu_loop():
 
 # Main program loop
 if __name__ == "__main__":
+    GPIO.setmode(GPIO.BCM)  # Use BCM numbering
+    GPIO.setup(KEY_UP_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY_DOWN_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY_PRESS_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY3_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     menu_loop()  # Start the interactive menu
+    GPIO.cleanup()
