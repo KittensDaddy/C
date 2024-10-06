@@ -66,24 +66,40 @@ def essid_selection_menu():
     # Clear the display before returning to the menu
     disp.LCD_Clear()
 
-# Get available wireless interfaces from iwconfig
 def get_wireless_interfaces():
+    interfaces = []
+
     try:
-        interfaces = []
-        output = subprocess.check_output(['/usr/sbin/iwconfig'], text=True).splitlines()
-        for line in output:
-            if "IEEE 802.11" in line:  # This indicates a wireless interface
-                interface_name = line.split()[0]
-                interfaces.append(interface_name)
+        # Run iwconfig to get wireless interface details
+        output = subprocess.check_output(['/usr/sbin/iwconfig'], text=True)
+        
+        # Split output into lines and parse each line
+        lines = output.splitlines()
+        current_interface = None
+        
+        for line in lines:
+            if "IEEE 802.11" in line:  # This line indicates a wireless interface
+                current_interface = line.split()[0]  # Get the interface name
+                # Get driver information using ethtool
+                try:
+                    driver_info = subprocess.check_output(['/usr/sbin/ethtool', '-i', current_interface], text=True)
+                    driver_name = next((line.split(": ")[1] for line in driver_info.splitlines() if "driver" in line), "Driver not found")
+                    interfaces.append((current_interface, driver_name))
+                except subprocess.CalledProcessError as e:
+                    interfaces.append((current_interface, "Error fetching driver info"))
+                    print(f"Error running ethtool for {current_interface}: {e}")
+
         if not interfaces:
-            interfaces.append("No wireless interfaces found")
+            interfaces.append(("No wireless interfaces found", ""))
+        
         return interfaces
+
     except subprocess.CalledProcessError as e:
         print(f"Error running iwconfig: {e}")
-        return ["Error fetching interfaces"]
+        return [("Error fetching interfaces", "")]
     except Exception as e:
         print(f"Error: {e}")
-        return ["Error fetching interfaces"]
+        return [("Error fetching interfaces", "")]
 
 
 # Initialize wireless interfaces
@@ -93,7 +109,7 @@ selected_interface = wireless_interfaces[0]
 options = [
     {"name": "Scan Time", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(10, 101, 10)]},
     {"name": "LOOP RUN", "state": False, "command": "-inf"},
-    {"name": "Select Interface", "state": selected_interface, "command": ""},
+    {"name": "I", "state": selected_interface, "command": ""},
     {"name": "Deauth", "state": False, "command": "--no-wps --no-pmkid"},
     {"name": "PIXIE", "state": False, "command": "--wps-only --pixie"},
     {"name": "WPS Time", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(60, 300, 10)]},
@@ -128,7 +144,7 @@ def toggle_option(selection):
     option = options[selection]
 
     # Special case for "Select Interface" option
-    if option['name'] == "Select Interface":
+    if option['name'] == "I":
         current_index = wireless_interfaces.index(option["state"])
         option["state"] = wireless_interfaces[(current_index + 1) % len(wireless_interfaces)]
         global selected_interface  # Update the selected interface globally
@@ -247,13 +263,19 @@ def display_message_with_wrap(message, append=False):
 import re
 
 def build_and_run_command():
+    global selected_interface  # Ensure you're using the global variable if necessary
+
+    # Ensure selected_interface is a string
+    selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
+
+    # Check if the "Show Cracked" option is selected
     if any(option["name"] == "Show Cracked" and option["state"] for option in options):
         display_message("Showing: cracked.json")
         display_file_on_lcd("cracked.json")  # Display file content on the LCD
     else:
-        command = ["sudo", "wifite", "-mac", "-i", selected_interface]  # Ensure selected_interface is passed
+        command = ["sudo", "wifite", "-mac", "-i", selected_interface_name]  # Use the correct interface name
 
-        # Append command options correctly
+        # Append command options correctly from the options list
         for option in options:
             if option["state"] and option.get("command"):
                 command.extend(option["command"].split())
@@ -276,7 +298,7 @@ def build_and_run_command():
 
             def read_output():
                 while True:
-                    output = process.stdout.readline()
+                    output = process.stdout.readline()  # Read each line of output
                     if output == '' and process.poll() is not None:
                         break
                     if output:
@@ -305,6 +327,7 @@ def build_and_run_command():
 
                     time.sleep(0.1)  # Control the scrolling speed
 
+            # Start a thread to read output from the process
             output_thread = threading.Thread(target=read_output)
             output_thread.start()
 
@@ -320,6 +343,7 @@ def build_and_run_command():
 
         except Exception as e:
             display_message(f"Error: {e}")
+
 
 
 
