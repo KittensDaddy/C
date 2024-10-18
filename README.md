@@ -14,3 +14,7 @@ ToDO
 - clean up code
 - properly handle each function
 - crack wpa upload
+
+
+----
+- use ~/.bashrc >> python3 /path/to/file #to start solving problem of ioctl error
