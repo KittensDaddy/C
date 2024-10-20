@@ -17,4 +17,4 @@ ToDO
 
 
 ----
-- use ~/.bashrc >> python3 /path/to/file #to start solving problem of ioctl error
+- use crontab with tmux crontab -e >> /usr/bin/tmux new-seesion -d -s 6 '/usr/bin/python3 /path/to/pyhton.py'
