@@ -1,8 +1,8 @@
 ToDO
 
 
-- show currently attack ESSID
-- Scan wifi and select for specific attack
+- ~~show currently attack ESSID~~
+- ~~Scan wifi and select for specific attack~~
 - a case
 - battery life test
 - performance and stability test
@@ -10,10 +10,11 @@ ToDO
 - better ui
 - stealth mode
 - screensaver
-- no wlan0 always
+- ~~no wlan0 default~~
 - clean up code
 - properly handle each function
-- crack wpa upload
+- crack wpa upload auto connect cracked wifi upload via tailscale
+- GIF embeded
 
 
 ----
