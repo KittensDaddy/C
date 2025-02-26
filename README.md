@@ -15,7 +15,10 @@ ToDO
 - properly handle each function
 - crack wpa upload auto connect cracked wifi upload via tailscale
 - GIF embeded
-
+- scrolling faster the longer press
+- add progress tracking when attack
+- reduce boot time
+- additional menu for selected wifi attack mode
 
 ----
 - use crontab with tmux crontab -e >> /usr/bin/tmux new-seesion -d -s 6 '/usr/bin/python3 /path/to/pyhton.py'
