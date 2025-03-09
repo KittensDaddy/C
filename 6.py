@@ -5,6 +5,7 @@ import time
 import RPi.GPIO as GPIO
 import subprocess
 import threading
+import sys
 from PIL import Image, ImageDraw, ImageFont
 
 os.environ["GPG_TTY"] = "/dev/tty1"
@@ -15,7 +16,7 @@ selected_essid = None  # Variable to store selected ESSID
 selected_bssid = None
 scanning = False  # State variable to track if scanning is active
 
-OPTIONS_PER_PAGE = 10
+OPTIONS_PER_PAGE = 12
 DEBOUNCE_TIME = 0.15
 current_index = 0
 
@@ -36,6 +37,17 @@ width, height = disp.width, disp.height
 image = Image.new('RGB', (width, height), color=(0, 0, 0))
 draw = ImageDraw.Draw(image)
 font = ImageFont.load_default()
+
+# Function to monitor button presses for restart and stop
+def monitor_buttons():
+    while True:
+        if GPIO.input(KEY3_PIN) == GPIO.LOW:
+            print("Restart button pressed. Restarting script...")
+            time.sleep(0.5)  # Debounce
+            os.execv(sys.executable, ['python3'] + sys.argv)  # Restart the script
+
+
+        time.sleep(0.05)  # Short delay to avoid rapid looping
 
 def check_monitor_mode_and_enable(interface):
     interface_name = interface[0] if isinstance(interface, tuple) else interface
@@ -578,5 +590,10 @@ if __name__ == "__main__":
     GPIO.setup(KEY1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(KEY2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(KEY3_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+    button_thread = threading.Thread(target=monitor_buttons)
+    button_thread.daemon = True
+    button_thread.start()
+
     menu_loop()  # Start the interactive menu
     GPIO.cleanup()
