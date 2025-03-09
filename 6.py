@@ -16,7 +16,7 @@ selected_essid = None  # Variable to store selected ESSID
 selected_bssid = None
 scanning = False  # State variable to track if scanning is active
 
-OPTIONS_PER_PAGE = 11
+OPTIONS_PER_PAGE = 12
 DEBOUNCE_TIME = 0.15
 current_index = 0
 
@@ -38,14 +38,26 @@ image = Image.new('RGB', (width, height), color=(0, 0, 0))
 draw = ImageDraw.Draw(image)
 font = ImageFont.load_default()
 
+stealth_mode_active = False
+
+def is_stealth_mode_active():
+    return stealth_mode_active
+
 # Function to monitor button presses for restart and stop
 def monitor_buttons():
+    global stealth_mode_active
     while True:
-        if GPIO.input(KEY3_PIN) == GPIO.LOW:
-            print("Restart button pressed. Restarting script...")
-            time.sleep(0.5)  # Debounce
-            os.execv(sys.executable, ['python3'] + sys.argv)  # Restart the script
+        #if GPIO.input(KEY3_PIN) == GPIO.LOW:
+        #    print("Restart button pressed. Restarting script...")
+        #    time.sleep(0.5)  # Debounce
+        #    os.execv(sys.executable, ['python3'] + sys.argv)  # Restart the script
 
+        if GPIO.input(KEY2_PIN) == GPIO.LOW:
+            print("Stealth mode activated.")
+            time.sleep(0.5)  # Debounce
+            stealth_mode_active = True
+            stealth()
+            stealth_mode_active = False
 
         time.sleep(0.05)  # Short delay to avoid rapid looping
 
@@ -176,6 +188,9 @@ def scan_wifi_networks():
                     # Store as a tuple (ESSID, BSSID)
                     if (essid, current_bssid) not in ESSIDS:  # Avoid duplicates
                         ESSIDS.append((essid, current_bssid))
+                        while stealth_mode_active:
+                            exit_stealth_mode()
+                            time.sleep(0.1)  # Short delay to avoid rapid looping
                         display_message_with_wrap(f"{essid}", append=True)
                         print(f"{essid}, {current_bssid}")
 
@@ -197,6 +212,9 @@ def essid_selection_menu():
     total_essids = len(ESSIDS)
 
     while True:
+        while stealth_mode_active:
+            exit_stealth_mode()
+            time.sleep(0.1)  # Short delay to avoid rapid looping
         draw.rectangle((0, 0, width, height), outline=0, fill=0)
         start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
         end_idx = min(total_essids, start_idx + OPTIONS_PER_PAGE)
@@ -238,7 +256,7 @@ options = [
     {"name": "PMKID", "state": False, "command": "--no-wps --pmkid"},
     {"name": "No PMKID", "state": False, "command": "--no-pmkid"},
     {"name": "All Band", "state": False, "command": "-ab"},
-    {"name": "Show Cracked", "state": False, "command": None},
+    {"name": "Show Cracked", "command": None, "run_on_press": True},
     {"name": "Run Background", "state": True, "command": None},
     {"name": "Clients Only", "state": False, "command": "--clients-only"},
     {"name": "No Deauths", "state": False, "command": "--nodeauths"},
@@ -255,7 +273,16 @@ def debounce():
     time.sleep(DEBOUNCE_TIME)
 
 # Display feedback on the screen
+def exit_stealth_mode():
+    global stealth_mode_active
+    if GPIO.input(KEY3_PIN) == GPIO.LOW:
+        disp.LCD_Clear()
+        stealth_mode_active = False
+
 def display_message(message):
+    while stealth_mode_active:
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
     draw.rectangle((0, 0, width, height), outline=0, fill=0)
     draw.text((10, 10), message, font=font, fill=(255, 255, 255))
     disp.LCD_ShowImage(image, 0, 0)
@@ -297,6 +324,9 @@ def toggle_option(selection):
 
 # Function to display specific lines from cracked.json on the LCD
 def display_file_on_lcd(filename):
+    while stealth_mode_active:
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
     try:
         with open(filename, 'r') as file:
             content = file.readlines()
@@ -307,11 +337,27 @@ def display_file_on_lcd(filename):
     # Clear the screen before displaying new content
     draw.rectangle((0, 0, width, height), outline=0, fill=0)
 
-    # Store lines that contain 'ESSID', 'PIN', or 'PSK'
+    # Store lines that contain 'ESSID' or 'PSK'
     filtered_lines = []
+    current_essid = None
+    current_psk = None
+
     for line in content:
-        if 'essid' in line or 'pin' in line or 'psk' in line:
-            filtered_lines.append(line.strip())
+        if '"essid"' in line:
+            if current_essid and current_psk is not None:
+                filtered_lines.append(current_essid)
+                filtered_lines.append(current_psk)
+                filtered_lines.append("------")
+            current_essid = line.split(":")[1].strip().strip('",')
+            current_psk = "null"  # Default value if no PSK is found
+        elif '"psk"' in line:
+            current_psk = line.split(":")[1].strip().strip('",')
+
+    # Add the last ESSID and PSK if present
+    if current_essid and current_psk is not None:
+        filtered_lines.append(current_essid)
+        filtered_lines.append(current_psk)
+        filtered_lines.append("------")
 
     # Check if any lines were found
     if not filtered_lines:
@@ -320,7 +366,14 @@ def display_file_on_lcd(filename):
 
     # Display the filtered content with scrolling
     start_idx = 0  # Track starting index for scrolling
+    scroll_speed = 0.1  # Initial scroll speed
+    scroll_hold_time = 2  # Time to hold before increasing scroll speed
+    hold_start_time = None
+
     while True:
+        while stealth_mode_active:
+            exit_stealth_mode()
+            time.sleep(0.1)  # Short delay to avoid rapid looping
         # Clear the screen and draw the lines to display
         draw.rectangle((0, 0, width, height), outline=0, fill=0)
         for i in range(start_idx, min(start_idx + (height // 10), len(filtered_lines))):
@@ -328,23 +381,37 @@ def display_file_on_lcd(filename):
 
         disp.LCD_ShowImage(image, 0, 0)
 
-        # Wait for user input to scroll or exit
         if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
+            if hold_start_time is None:
+                hold_start_time = time.time()
+            elif time.time() - hold_start_time > scroll_hold_time:
+                scroll_speed = 0.03  # Increase scroll speed after holding
             if start_idx > 0:  # Scroll up
                 start_idx -= 1
-            time.sleep(0.2)  # Debounce
+            time.sleep(scroll_speed)  # Debounce
 
         elif GPIO.input(KEY_DOWN_PIN) == GPIO.LOW:
+            if hold_start_time is None:
+                hold_start_time = time.time()
+            elif time.time() - hold_start_time > scroll_hold_time:
+                scroll_speed = 0.03  # Increase scroll speed after holding
             if start_idx < len(filtered_lines) - (height // 10):  # Scroll down
                 start_idx += 1
-            time.sleep(0.2)  # Debounce
+            time.sleep(scroll_speed)  # Debounce
 
-        elif GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:  # Exit on any key press
+        else:
+            hold_start_time = None
+            scroll_speed = 0.1  # Reset scroll speed when button is released
+
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:  # Exit on any key press
             break
 
     disp.LCD_Clear()  # Clear the display before returning to the menu
 
 def display_message_with_wrap(message, append=False):
+    while stealth_mode_active:
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
     # Maximum characters that fit on one line
     max_chars_per_line = width // 10  # Approximation (depends on font size)
     
@@ -397,6 +464,9 @@ current_mac = ""
 
 # Non-blocking I/O helper to read subprocess output
 def read_output_nonblocking(process, output_lines):
+    while stealth_mode_active:
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
     global current_essid, current_mac
 
     for line in iter(process.stdout.readline, ''):
@@ -451,6 +521,9 @@ def build_and_run_command():
 
             # Read stdout and print output lines as they come in
             for line in iter(process.stdout.readline, ''):
+                while stealth_mode_active:
+                    exit_stealth_mode()
+                    time.sleep(0.1)  # Short delay to avoid rapid looping
                 display_message_with_wrap(line.strip())  # Print each output line
                 print(line.strip())  # Print each output line
 
@@ -507,6 +580,9 @@ def build_and_run_command():
 
 # Function to draw the current scroll window of options
 def draw_menu(active_idx):
+    while stealth_mode_active:
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
     draw.rectangle((0, 0, width, height), outline=0, fill=0)  # Clear screen
 
     # Determine the start and end indices for the visible window
@@ -518,10 +594,13 @@ def draw_menu(active_idx):
         option = options[i]
 
         # Determine state display text
-        if isinstance(option["state"], bool):
-            state_text = "On" if option["state"] else "Off"
+        if "state" in option:
+            if isinstance(option["state"], bool):
+                state_text = "On" if option["state"] else "Off"
+            else:
+                state_text = option["state"]
         else:
-            state_text = option["state"]
+            state_text = ""
 
         if i == active_idx:
             draw.text((6, (i - start_idx) * 10), f"> {option['name']}: {state_text}", font=font, fill=(255, 255, 0))  # Highlight active option
@@ -532,19 +611,17 @@ def draw_menu(active_idx):
 
 from PIL import ImageSequence
 
-def display_cat_drawing():
+def stealth():
+    global stealth_mode_active
     gif_path = "/home/test/cat.gif"  # Update with the path to your GIF file
     gif = Image.open(gif_path)
 
-    while True:
+    while stealth_mode_active:
         for frame in ImageSequence.Iterator(gif):
             frame = frame.resize((width, height))  # Resize frame to match display dimensions
             disp.LCD_ShowImage(frame, 0, 0)
             time.sleep(0.1)  # Adjust the delay as needed
-
-            if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
-                disp.LCD_Clear()
-                return  # Exit the function on key press
+            exit_stealth_mode()
         time.sleep(0.1)  # Short delay to avoid rapid looping
 
  #Update the menu loop to include scanning and selecting ESSIDs
@@ -565,7 +642,10 @@ def menu_loop():
 
         elif GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
             selected_option = options[active_idx]
-            if selected_option["name"] == "Quit":
+            if selected_option.get("run_on_press"):
+                display_message("Showing: cracked.json")
+                display_file_on_lcd("cracked.json")
+            elif selected_option["name"] == "Quit":
                 display_message("Exiting...")
                 time.sleep(1)
                 disp.LCD_Clear()
@@ -585,7 +665,7 @@ def menu_loop():
             debounce()
 
         elif GPIO.input(KEY2_PIN) == GPIO.LOW:  # New condition to display cat drawing
-            display_cat_drawing()
+            stealth()
             debounce()
 
 # Main program loop
