@@ -16,7 +16,7 @@ selected_essid = None  # Variable to store selected ESSID
 selected_bssid = None
 scanning = False  # State variable to track if scanning is active
 
-OPTIONS_PER_PAGE = 12
+OPTIONS_PER_PAGE = 11
 DEBOUNCE_TIME = 0.15
 current_index = 0
 
@@ -150,10 +150,17 @@ def scan_wifi_networks():
     global ESSIDS, current_index
     ESSIDS.clear()  # Clear previous scan results
 
-    display_message("Scanning... Press SELECT to stop")
+# Get the scan duration from the "Scan Time" option
+    scan_time_option = next(option for option in options if option["name"] == "Scan Time")
+    scan_duration = int(scan_time_option["state"]) if scan_time_option["state"] != "Off" else 10
+
+    display_message(f"Scanning for {scan_duration} seconds...")
     selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
     display_message_with_wrap(f"{selected_interface}, {selected_interface_name}")
-    while GPIO.input(KEY_PRESS_PIN) != GPIO.LOW:  # Continue scanning until key is pressed
+
+    start_time = time.time()
+    
+    while time.time() - start_time < scan_duration:
         check_monitor_mode_and_disable(selected_interface_name)
         result = subprocess.run(["sudo", "/usr/sbin/iwlist", selected_interface_name, "scan"], capture_output=True, text=True)
 
@@ -174,7 +181,7 @@ def scan_wifi_networks():
 
         time.sleep(0.2)  # Add a slight delay between scans to avoid overloading the system
 
-    print("Wi-Fi scan stopped.")
+    print("Wi-Fi scan completed.")
 
 
 # Function to display the ESSID selection menu
@@ -523,22 +530,22 @@ def draw_menu(active_idx):
 
     disp.LCD_ShowImage(image, 0, 0)
 
-# Function to create and display a cat drawing
-def display_cat_drawing():
-    draw.rectangle((0, 0, width, height), outline=0, fill=0)  # Clear screen
-    # Draw a simple cat face
-    draw.ellipse((40, 20, 80, 60), fill=(255, 255, 255))  # Cat face
-    draw.ellipse((50, 30, 70, 50), fill=(0, 0, 0))  # Cat eyes
-    draw.polygon([(50, 20), (60, 0), (70, 20)], fill=(255, 255, 255))  # Cat ears
-    # Display the drawing
-    disp.LCD_ShowImage(image, 0, 0)
-    while True:
-        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
-            break  # Exit the loop on any key press
-        time.sleep(0.1)  # Short delay to avoid rapid looping
+from PIL import ImageSequence
 
-    # Clear the display before returning to the menu
-    disp.LCD_Clear()
+def display_cat_drawing():
+    gif_path = "/home/test/cat.gif"  # Update with the path to your GIF file
+    gif = Image.open(gif_path)
+
+    while True:
+        for frame in ImageSequence.Iterator(gif):
+            frame = frame.resize((width, height))  # Resize frame to match display dimensions
+            disp.LCD_ShowImage(frame, 0, 0)
+            time.sleep(0.1)  # Adjust the delay as needed
+
+            if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+                disp.LCD_Clear()
+                return  # Exit the function on key press
+        time.sleep(0.1)  # Short delay to avoid rapid looping
 
  #Update the menu loop to include scanning and selecting ESSIDs
 def menu_loop():
