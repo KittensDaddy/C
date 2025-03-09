@@ -7,6 +7,7 @@ import subprocess
 import threading
 import sys
 from PIL import Image, ImageDraw, ImageFont
+from INA219 import INA219
 
 os.environ["GPG_TTY"] = "/dev/tty1"
 #os.system("export GPG_TTY=$(tty)")
@@ -16,7 +17,7 @@ selected_essid = None  # Variable to store selected ESSID
 selected_bssid = None
 scanning = False  # State variable to track if scanning is active
 
-OPTIONS_PER_PAGE = 12
+OPTIONS_PER_PAGE = 11
 DEBOUNCE_TIME = 0.15
 current_index = 0
 
@@ -42,6 +43,31 @@ stealth_mode_active = False
 
 def is_stealth_mode_active():
     return stealth_mode_active
+
+# Initialize INA219
+ina219 = INA219(addr=0x43)
+
+def draw_battery_bar():
+    bus_voltage = ina219.getBusVoltage_V()             # voltage on V- (load side)
+    shunt_voltage = ina219.getShuntVoltage_mV() / 1000 # voltage between V+ and V- across the shunt
+    p = (bus_voltage - 3) / 1.2 * 100
+    if p > 100:
+        p = 100
+    if p < 0:
+        p = 0
+
+    # Determine battery bar color
+    if p >= 60:
+        color = (0, 255, 0)  # Green
+    elif p >= 30:
+        color = (255, 255, 0)  # Yellow
+    else:
+        color = (255, 0, 0)  # Red
+
+    # Draw battery bar
+    bar_width = int((width - 20) * (p / 100))
+    draw.rectangle((10, height - 10, 10 + bar_width, height - 5), fill=color)
+    draw.rectangle((10, height - 10, width - 10, height - 5), outline=(255, 255, 255))
 
 # Function to monitor button presses for restart and stop
 def monitor_buttons():
@@ -245,6 +271,7 @@ def essid_selection_menu():
 
 
 options = [
+    {"name": "PIXIE QUICK 30", "state": False, "command": "--wps-only --pixie --wps-time 30 -p 10"},
     {"name": "Scan WIFI", "state": False, "command": None},
     {"name": "Scan Time", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(10, 101, 10)]},
     {"name": "LOOP RUN", "state": False, "command": "-inf"},
@@ -261,8 +288,7 @@ options = [
     {"name": "Clients Only", "state": False, "command": "--clients-only"},
     {"name": "No Deauths", "state": False, "command": "--nodeauths"},
     {"name": "Deauth sec", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(31)]},
-    {"name": "PIXIE QUICK 30", "state": False, "command": "--wps-only --pixie --wps-time 30"},
-    {"name": "PIXIE QUICK 60", "state": False, "command": "--wps-only --pixie --wps-time 60"},
+    {"name": "PIXIE QUICK 60", "state": False, "command": "--wps-only --pixie --wps-time 60 -p 20"},
     {"name": "DEAUTH QUICK 120", "state": False, "command": "--no-pmkid --no-wps -wpat 120"},
     {"name": "DEAUTH QUICK 240", "state": False, "command": "--no-pmkid --no-wps -wpat 240"},
     {"name": "Quit", "state": False, "command": None}
@@ -287,6 +313,16 @@ def display_message(message):
     draw.text((10, 10), message, font=font, fill=(255, 255, 255))
     disp.LCD_ShowImage(image, 0, 0)
     time.sleep(2) 
+
+def display_top(message):
+    while stealth_mode_active:
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
+    draw.rectangle((0, 0, 128, 20), outline=0, fill=0)
+    message = re.sub(r'\x1B\[[0-?9;]*[mK]', '', message)  # Remove ANSI color codes
+    draw.text((10, 0), message, font=font, fill=(255, 255, 255))
+    disp.LCD_ShowImage(image, 0, 0)
+    time.sleep(1) 
 
 # Handle option toggling and updating command
 def toggle_option(selection):
@@ -408,12 +444,13 @@ def display_file_on_lcd(filename):
 
     disp.LCD_Clear()  # Clear the display before returning to the menu
 
-def display_message_with_wrap(message, append=False):
+def display_message_with_wrap(message, append=False, top=False):
     while stealth_mode_active:
         exit_stealth_mode()
         time.sleep(0.1)  # Short delay to avoid rapid looping
+
     # Maximum characters that fit on one line
-    max_chars_per_line = width // 10  # Approximation (depends on font size)
+    max_chars_per_line = width // 5  # Approximation (depends on font size)
     
     # Remove ASCII color codes
     message = re.sub(r'\x1B\[[0-?9;]*[mK]', '', message)  # ANSI escape code for colors
@@ -440,17 +477,19 @@ def display_message_with_wrap(message, append=False):
         # Store existing lines from the previous message (if any)
         existing_lines = getattr(display_message_with_wrap, 'existing_lines', [])
         displayed_lines = existing_lines + displayed_lines
-        
+
     # Limit the displayed lines to the height of the display
-    max_visible_lines = height // 10  # Assuming each line is 10 pixels high
-    displayed_lines = displayed_lines[-max_visible_lines:]  # Keep only the last few lines that fit
+    max_visible_lines = (height - 20) // 12  # Assuming each line is 10 pixels high
+    if len(displayed_lines) > max_visible_lines:
+        displayed_lines = displayed_lines[-max_visible_lines:]  # Keep only the last few lines that fit
 
     # Clear the display before showing new content
     draw.rectangle((0, 0, width, height), outline=0, fill=0)
-    
+    draw_battery_bar()
+
     # Display the lines
     for i, line in enumerate(displayed_lines):
-        draw.text((10, i * 10), line.strip(), font=font, fill=(255, 255, 255))
+        draw.text((10, (i * 10) + 20), line.strip(), font=font, fill=(255, 255, 255))
 
     disp.LCD_ShowImage(image, 0, 0)
 
@@ -469,22 +508,31 @@ def read_output_nonblocking(process, output_lines):
         time.sleep(0.1)  # Short delay to avoid rapid looping
     global current_essid, current_mac
 
+    essid_results = {}
+
     for line in iter(process.stdout.readline, ''):
         output_stripped = line.strip()
 
         # Display raw output (debugging line, can be removed)
         #display_message_with_wrap(f"Raw Output: {output_stripped}", append=False)
 
+        # Display ESSID and signal strength while scanning
+        essid_scan_match = re.search(r'^\s*\d+\s+(.+?)\s+\d+\s+\S+\s+(\d+db)', output_stripped)
+        if essid_scan_match:
+            essid_scan = essid_scan_match.group(1).strip()
+            signal_strength = essid_scan_match.group(2).strip()
+            display_message_with_wrap(f"Scanning: {essid_scan} ({signal_strength})", append=True)
+            time.sleep(0.1)
+
         # Check for "Starting attacks against" message and update ESSID/MAC
-        
         if "Starting attacks against" in output_stripped:
             essid_match = re.search(r'Starting attacks against (.+?) \((.*?)\)$', output_stripped)
             if essid_match:
-                current_essid = essid_match.group(1).strip()  # Extract ESSID
-                current_mac = essid_match.group(2).strip()  # Extract MAC address
-                display_message_with_wrap(f"Attacking: {current_mac}", append=False)
-                time.sleep(2)  # Keep the message on the screen longer
-        
+                #disp.LCD_Clear()
+                current_mac = essid_match.group(1).strip()  # Extract mac address
+                current_essid = essid_match.group(2).strip()  # Extract essid
+                display_top(f"-> {current_essid}")
+                time.sleep(0.2)  # Keep the message on the screen longer
 
         # Handle output like targets and clients found
         matches = re.findall(r'\x1b\[[0-9;]*m.*?Found.*?\x1b\[[0-9;]*m(\d+).*?target\(s\).*?\x1b\[[0-9;]*m(\d+).*?client\(s\)', output_stripped)
@@ -493,20 +541,39 @@ def read_output_nonblocking(process, output_lines):
             output_lines.append(f"{target_count} targets, {client_count} clients")
 
             # Update display with ESSID and other information
-            display_message_with_wrap(f"Attacking: {current_essid} ({current_mac})", append=False)  # Always show ESSID
-            display_message_with_wrap(output_lines[-1], append=True)  # Show the latest targets/clients found
-            time.sleep(2)  # Keep this info on the screen for 2 seconds before continuing
+            #display_message_with_wrap(f"-> {current_essid}", append=True, top=True)
+            time.sleep(0.1)  # Keep this info on the screen for 2 seconds before continuing
+
+        # Display important lines from wifite output
+        if "WPA Handshake" in output_stripped:
+            essid_results[current_essid] = "cracked"
+            display_message_with_wrap(f"{current_essid} -> cracked", append=True)
+            time.sleep(0.1)
+        elif "Cracked" in output_stripped:
+            if "PSK/Password: N/A" in output_stripped:
+                essid_results[current_essid] = "cracked"
+                display_message_with_wrap(f"{current_essid} > cracked", append=True)
+            else:
+                essid_results[current_essid] = "psk"
+                display_message_with_wrap(f"{current_essid} > password", append=True)
+            time.sleep(0.1)
+        elif "Failed" in output_stripped:
+            essid_results[current_essid] = "failed"
+            display_message_with_wrap(f"{current_essid} > failed", append=True)
+            time.sleep(0.1)
+
+    # Print final results
+    #display_message_with_wrap("\nFinal Results:", append=True)
+    #for essid, result in essid_results.items():
+    #    display_message_with_wrap(f"{essid} -> {result}", append=False)
 
 def build_and_run_command():
     global selected_interface
 
     selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
 
-    if any(option["name"] == "Show Cracked" and option["state"] for option in options):
-        display_message("Showing: cracked.json")
-        display_file_on_lcd("cracked.json")
-
-    elif selected_bssid is not None and any(option["state"] for option in options if option["name"] == "PIXIE"):
+   
+    if selected_bssid is not None and any(option["state"] for option in options if option["name"] == "PIXIE"):
         check_monitor_mode_and_enable(selected_interface)
         command = ["sudo", "/usr/bin/reaver", "-i", selected_interface_name, "-vv", "--pixie-dust", "-b", selected_bssid]
 
@@ -543,16 +610,17 @@ def build_and_run_command():
         command = ["sudo", "/usr/sbin/wifite", "-mac", "-i", selected_interface_name]
 
         for option in options:
-            if option["state"] and option.get("command"):
+            if option.get("state") and option.get("command"):
                 command.extend(option["command"].split())
 
         if selected_essid:
             command.append(f'-bssid "{selected_bssid}"')
 
         command_str = ' '.join(command)
-        display_message_with_wrap(f"Running: {command_str}")
+        disp.LCD_Clear_Black()
+        #display_message_with_wrap(f"Running: {command_str}")
         time.sleep(1)
-        disp.LCD_Clear()
+        draw.rectangle((0, 0, width, height), outline=0, fill=0)
 
         try:
             # Execute the command
@@ -572,6 +640,7 @@ def build_and_run_command():
             stderr_output = process.stderr.read()
             if stderr_output:
                 stderr_output_stripped = stderr_output.strip()
+                disp.LCD_Clear()
                 display_message_with_wrap(f"Error: {stderr_output_stripped}")
                 time.sleep(2)
         except Exception as e:
@@ -607,22 +676,106 @@ def draw_menu(active_idx):
         else:
             draw.text((6, (i - start_idx) * 10), f"  {option['name']}: {state_text}", font=font, fill=(255, 255, 255))  # Normal display
 
+    # Draw the battery bar
+    draw_battery_bar()
+
     disp.LCD_ShowImage(image, 0, 0)
 
 from PIL import ImageSequence
 
 def stealth():
     global stealth_mode_active
-    gif_path = "/home/test/cat.gif"  # Update with the path to your GIF file
-    gif = Image.open(gif_path)
+
+    # Ensure GPIO setup
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(KEY_LEFT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY_RIGHT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+    # Simple game variables
+    ball_pos = [width // 2, height // 2]
+    ball_dir = [1, 1]
+    ball_speed = 2
+    paddle_width = 20
+    paddle_height = 5
+    paddle_pos = [width // 2 - paddle_width // 2, height - 20]  # Adjusted for battery bar
+    paddle_speed = 5
 
     while stealth_mode_active:
-        for frame in ImageSequence.Iterator(gif):
-            frame = frame.resize((width, height))  # Resize frame to match display dimensions
-            disp.LCD_ShowImage(frame, 0, 0)
-            time.sleep(0.1)  # Adjust the delay as needed
-            exit_stealth_mode()
-        time.sleep(0.1)  # Short delay to avoid rapid looping
+        # Clear the screen
+        draw.rectangle((0, 0, width, height), outline=0, fill=0)
+
+        # Move the ball
+        ball_pos[0] += ball_dir[0] * ball_speed
+        ball_pos[1] += ball_dir[1] * ball_speed
+
+        # Ball collision with walls
+        if ball_pos[0] <= 0 or ball_pos[0] >= width:
+            ball_dir[0] = -ball_dir[0]
+        if ball_pos[1] <= 0:
+            ball_dir[1] = -ball_dir[1]
+        if ball_pos[1] >= height - 20:  # Adjusted for battery bar
+            ball_dir[1] = -ball_dir[1]
+
+        # Ball collision with paddle
+        if (paddle_pos[0] <= ball_pos[0] <= paddle_pos[0] + paddle_width and
+                paddle_pos[1] <= ball_pos[1] <= paddle_pos[1] + paddle_height):
+            ball_dir[1] = -ball_dir[1]
+
+        # Draw the ball
+        draw.ellipse((ball_pos[0] - 2, ball_pos[1] - 2, ball_pos[0] + 2, ball_pos[1] + 2), fill=(255, 255, 255))
+
+        # Draw the paddle
+        draw.rectangle((paddle_pos[0], paddle_pos[1], paddle_pos[0] + paddle_width, paddle_pos[1] + paddle_height), fill=(255, 255, 255))
+
+        # Move the paddle
+        if GPIO.input(KEY_LEFT_PIN) == GPIO.LOW and paddle_pos[0] > 0:
+            paddle_pos[0] -= paddle_speed
+        if GPIO.input(KEY_RIGHT_PIN) == GPIO.LOW and paddle_pos[0] < width - paddle_width:
+            paddle_pos[0] += paddle_speed
+
+        # Draw the battery bar
+        draw_battery_bar()
+
+        # Display the game
+        disp.LCD_ShowImage(image, 0, 0)
+        time.sleep(0.05)  # Adjust the delay as needed
+
+        # Exit stealth mode
+        exit_stealth_mode()
+
+def splash_screen():
+    text = "SUN"
+    text_color = (0, 255, 255)
+    text_shadow_color = (255, 0, 255)
+    text_pos = [width // 2, height // 2]
+    text_dir = [1, 1]
+    text_speed = 2
+    font_large = ImageFont.load_default()  # Use default font to avoid resource issues
+
+    start_time = time.time()
+    while time.time() - start_time < 6:
+        if GPIO.input(KEY_UP_PIN) == GPIO.LOW or GPIO.input(KEY_DOWN_PIN) == GPIO.LOW or GPIO.input(KEY_PRESS_PIN) == GPIO.LOW or GPIO.input(KEY1_PIN) == GPIO.LOW or GPIO.input(KEY2_PIN) == GPIO.LOW or GPIO.input(KEY3_PIN) == GPIO.LOW:
+            break
+
+        draw.rectangle((0, 0, width, height), outline=0, fill=0)
+
+        # Move the text
+        text_pos[0] += text_dir[0] * text_speed
+        text_pos[1] += text_dir[1] * text_speed
+
+        # Text collision with walls
+        if text_pos[0] <= 0 or text_pos[0] >= width - 50:  # Adjusted for text width
+            text_dir[0] = -text_dir[0]
+        if text_pos[1] <= 0 or text_pos[1] >= height - 24:  # Adjusted for text height
+            text_dir[1] = -text_dir[1]
+
+        # Draw text shadow
+        draw.text((text_pos[0] + 2, text_pos[1] + 2), text, font=font_large, fill=text_shadow_color)
+        # Draw text
+        draw.text((text_pos[0], text_pos[1]), text, font=font_large, fill=text_color)
+
+        disp.LCD_ShowImage(image, 0, 0)
+        time.sleep(0.05)
 
  #Update the menu loop to include scanning and selecting ESSIDs
 def menu_loop():
@@ -678,9 +831,14 @@ if __name__ == "__main__":
     GPIO.setup(KEY2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(KEY3_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
+    # Show splash screen
+    splash_screen()
+
     button_thread = threading.Thread(target=monitor_buttons)
     button_thread.daemon = True
     button_thread.start()
 
+    menu_loop()  # Start the interactive menu
+    GPIO.cleanup()
     menu_loop()  # Start the interactive menu
     GPIO.cleanup()

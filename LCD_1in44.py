@@ -1,4 +1,4 @@
- # -*- coding:UTF-8 -*-
+# -*- coding:UTF-8 -*-
  ##
  # | file      	:	LCD_1IN44.py
  # |	version		:	V2.0
@@ -288,11 +288,17 @@ class LCD(config.RaspberryPi):
 		self.LCD_WriteReg(0x2C)
 
 	def LCD_Clear(self):
-		#hello
 		_buffer = [0xff]*(self.width * self.height * 2)
 		self.LCD_SetWindows(0, 0, self.width, self.height)
 		self.digital_write(self.GPIO_DC_PIN, True)
 		for i in range(0,len(_buffer),4096):
+			self.spi_writebyte(_buffer[i:i+4096])
+		
+	def LCD_Clear_Black(self):
+		_buffer = [0x00]*(self.width * self.height * 2)
+		self.LCD_SetWindows(0, 0, self.width, self.height)
+		self.digital_write(self.GPIO_DC_PIN, True)
+		for i in range(0, len(_buffer), 4096):
 			self.spi_writebyte(_buffer[i:i+4096])
 
 	def LCD_ShowImage(self,Image,Xstart,Ystart):
