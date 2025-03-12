@@ -157,11 +157,11 @@ def get_wireless_interfaces():
                 try:
                     driver_info = subprocess.check_output(['/usr/sbin/ethtool', '-i', current_interface], text=True)
                     driver_name = next((line.split(": ")[1] for line in driver_info.splitlines() if "driver" in line), "Driver not found")
-                    interfaces.append((current_interface, driver_name))
+                    if driver_name != "brcmfmac":  # Exclude interfaces with brcmfmac driver
+                        interfaces.append((current_interface, driver_name))
                 except subprocess.CalledProcessError as e:
                     interfaces.append((current_interface, "Error fetching driver info"))
                     print(f"Error running ethtool for {current_interface}: {e}")
-
         if not interfaces:
             interfaces.append(("No wireless interfaces found", ""))
         
@@ -174,7 +174,6 @@ def get_wireless_interfaces():
         print(f"Error: {e}")
         return [("Error fetching interfaces", "")]
 
-
 # Initialize wireless interfaces
 wireless_interfaces = get_wireless_interfaces()
 if len(wireless_interfaces) > 1:
@@ -182,6 +181,22 @@ if len(wireless_interfaces) > 1:
 else:
     selected_interface = wireless_interfaces[0]
 
+def refresh_interfaces():
+    global wireless_interfaces, selected_interface
+    wireless_interfaces.clear()  # Clear old interfaces
+    wireless_interfaces = get_wireless_interfaces()
+    if len(wireless_interfaces) > 1:
+        selected_interface = wireless_interfaces[1]
+    else:
+        selected_interface = wireless_interfaces[0]
+    
+    # Update the "I" option with the new selected interface
+    for option in options:
+        if option["name"] == "I":
+            option["state"] = selected_interface
+    
+    display_message("Interfaces refreshed")
+    draw_menu(current_index)  # Redraw the menu to reflect the changes
 
 #Function scan for wifi
 def scan_wifi_networks():
@@ -252,6 +267,7 @@ def essid_selection_menu():
             else:
                 draw.text((6, (i - start_idx) * 10), f"  {essid}", font=font, fill=(255, 255, 255))
 
+        draw_battery_bar()  # Ensure battery bar is drawn
         disp.LCD_ShowImage(image, 0, 0)
 
         if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
@@ -276,6 +292,7 @@ options = [
     {"name": "Scan Time", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(10, 101, 10)]},
     {"name": "LOOP RUN", "state": False, "command": "-inf"},
     {"name": "I", "state": selected_interface, "command": ""},
+    {"name": "Refresh Interfaces", "state": False, "command": None},
     {"name": "Deauth", "state": False, "command": "--no-wps --no-pmkid"},
     {"name": "PIXIE", "state": False, "command": "--wps-only --pixie"},
     {"name": "WPS Time", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(60, 300, 10)]},
@@ -311,6 +328,7 @@ def display_message(message):
         time.sleep(0.1)  # Short delay to avoid rapid looping
     draw.rectangle((0, 0, width, height), outline=0, fill=0)
     draw.text((10, 10), message, font=font, fill=(255, 255, 255))
+    draw_battery_bar()  # Ensure battery bar is drawn
     disp.LCD_ShowImage(image, 0, 0)
     time.sleep(2) 
 
@@ -321,6 +339,7 @@ def display_top(message):
     draw.rectangle((0, 0, 128, 20), outline=0, fill=0)
     message = re.sub(r'\x1B\[[0-?9;]*[mK]', '', message)  # Remove ANSI color codes
     draw.text((10, 0), message, font=font, fill=(255, 255, 255))
+    draw_battery_bar()  # Ensure battery bar is drawn
     disp.LCD_ShowImage(image, 0, 0)
     time.sleep(1) 
 
@@ -330,8 +349,11 @@ def toggle_option(selection):
 
     # Special case for "Select Interface" option
     if option['name'] == "I":
-        current_index = wireless_interfaces.index(option["state"])
-        option["state"] = wireless_interfaces[(current_index + 1) % len(wireless_interfaces)]
+        try:
+            current_index = wireless_interfaces.index(option["state"])
+        except ValueError:
+            current_index = 0  # Default to the first interface if not found
+        option["state"] = wireless_interfaces[(current_index) % len(wireless_interfaces)]
         global selected_interface  # Update the selected interface globally
         selected_interface = option["state"]
         print(f"Selected interface: {selected_interface}")
@@ -415,6 +437,7 @@ def display_file_on_lcd(filename):
         for i in range(start_idx, min(start_idx + (height // 10), len(filtered_lines))):
             draw.text((10, (i - start_idx) * 10), filtered_lines[i], font=font, fill=(255, 255, 255))
 
+        draw_battery_bar()  # Ensure battery bar is drawn
         disp.LCD_ShowImage(image, 0, 0)
 
         if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
@@ -491,6 +514,7 @@ def display_message_with_wrap(message, append=False, top=False):
     for i, line in enumerate(displayed_lines):
         draw.text((10, (i * 10) + 20), line.strip(), font=font, fill=(255, 255, 255))
 
+    draw_battery_bar()  # Ensure battery bar is drawn
     disp.LCD_ShowImage(image, 0, 0)
 
     # Store the displayed lines for the next call
@@ -774,6 +798,7 @@ def splash_screen():
         # Draw text
         draw.text((text_pos[0], text_pos[1]), text, font=font_large, fill=text_color)
 
+        draw_battery_bar()  # Ensure battery bar is drawn
         disp.LCD_ShowImage(image, 0, 0)
         time.sleep(0.05)
 
@@ -808,6 +833,8 @@ def menu_loop():
                 display_message("please select wifi")
                 time.sleep(1)
                 essid_selection_menu()  # After scanning, enter ESSID selection
+            elif selected_option["name"] == "Refresh Interfaces":  # New option to refresh interfaces
+                refresh_interfaces()
             else:
                 # Toggle option
                 toggle_option(active_idx)
@@ -820,6 +847,7 @@ def menu_loop():
         elif GPIO.input(KEY2_PIN) == GPIO.LOW:  # New condition to display cat drawing
             stealth()
             debounce()
+
 
 # Main program loop
 if __name__ == "__main__":
