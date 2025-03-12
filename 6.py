@@ -13,12 +13,13 @@ os.environ["GPG_TTY"] = "/dev/tty1"
 #os.system("export GPG_TTY=$(tty)")
 
 ESSIDS = []  # List to store scanned ESSIDs
+excluded_essid = []  # List to store excluded ESSIDs
 selected_essid = None  # Variable to store selected ESSID
 selected_bssid = None
 scanning = False  # State variable to track if scanning is active
 
 OPTIONS_PER_PAGE = 11
-DEBOUNCE_TIME = 0.15
+DEBOUNCE_TIME = 0.2
 current_index = 0
 
 KEY_UP_PIN = 6
@@ -67,7 +68,7 @@ def draw_battery_bar():
     # Draw battery bar
     bar_width = int((width - 20) * (p / 100))
     draw.rectangle((10, height - 10, 10 + bar_width, height - 5), fill=color)
-    draw.rectangle((10, height - 10, width - 10, height - 5), outline=(255, 255, 255))
+    draw.rectangle((10, height - 10, width - 10, height - 5), outline=current_theme["text"])
 
 # Function to monitor button presses for restart and stop
 def monitor_buttons():
@@ -129,7 +130,7 @@ def check_monitor_mode_and_disable(interface):
             if "Mode:Monitor" in line:
                 monitor_mode_found = True
                 subprocess.run(["sudo", "ip", "link", "set", interface_name, "down"], check=True)
-                subprocess.run(["sudo", "iw", "dev", interface_name, "set", "type", "managed"], check=True)
+                subprocess.run(["sudo", "iwconfig", interface_name, "mode", "managed"], check=True)
                 subprocess.run(["sudo", "ip", "link", "set", interface_name, "up"], check=True)
 
     except subprocess.CalledProcessError as e:
@@ -151,7 +152,7 @@ def get_wireless_interfaces():
         current_interface = None
         
         for line in lines:
-            if "IEEE 802.11" in line:  # This line indicates a wireless interface
+            if "IEEE 802.11" in line or "unassociated" in line:  # This line indicates a wireless interface
                 current_interface = line.split()[0]  # Get the interface name
                 # Get driver information using ethtool
                 try:
@@ -162,6 +163,9 @@ def get_wireless_interfaces():
                 except subprocess.CalledProcessError as e:
                     interfaces.append((current_interface, "Error fetching driver info"))
                     print(f"Error running ethtool for {current_interface}: {e}")
+            elif current_interface and ("Mode:Monitor" in line or "Mode:Managed" in line):
+                # Ensure we only add interfaces that have a valid mode
+                current_interface = None
         if not interfaces:
             interfaces.append(("No wireless interfaces found", ""))
         
@@ -185,6 +189,7 @@ def refresh_interfaces():
     global wireless_interfaces, selected_interface
     wireless_interfaces.clear()  # Clear old interfaces
     wireless_interfaces = get_wireless_interfaces()
+    
     if len(wireless_interfaces) > 1:
         selected_interface = wireless_interfaces[1]
     else:
@@ -205,7 +210,7 @@ def scan_wifi_networks():
 
 # Get the scan duration from the "Scan Time" option
     scan_time_option = next(option for option in options if option["name"] == "Scan Time")
-    scan_duration = int(scan_time_option["state"]) if scan_time_option["state"] != "Off" else 10
+    scan_duration = int(scan_time_option["state"])
 
     display_message(f"Scanning for {scan_duration} seconds...")
     selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
@@ -270,26 +275,72 @@ def essid_selection_menu():
         draw_battery_bar()  # Ensure battery bar is drawn
         disp.LCD_ShowImage(image, 0, 0)
 
-        if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
-            active_idx = (active_idx - 1) % total_essids  # Scroll up
-            debounce()
+        active_idx = handle_scroll(active_idx, total_essids)
 
-        elif GPIO.input(KEY_DOWN_PIN) == GPIO.LOW:
-            active_idx = (active_idx + 1) % total_essids  # Scroll down
-            debounce()
-
-        elif GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
             selected_essid, selected_bssid = ESSIDS[active_idx]  # Store both selected values
             display_message(f"Selected: {selected_essid}, BSSID: {selected_bssid}")
             time.sleep(1)
             break
 
+def scan_and_toggle_essids():
+    global ESSIDS
+    ESSIDS.clear()  # Clear previous scan results
 
+    # Scan for Wi-Fi networks
+    scan_wifi_networks()
+
+    # Display the ESSID selection menu for toggling exclusion
+    essid_selection_menu_for_exclusion()
+
+def essid_selection_menu_for_exclusion():
+    global ESSIDS, excluded_essid
+
+    if not ESSIDS:
+        display_message("No Wi-Fi networks to display")
+        return
+    
+    active_idx = 0
+    total_essids = len(ESSIDS)
+
+    while True:
+        while stealth_mode_active:
+            exit_stealth_mode()
+            time.sleep(0.1)  # Short delay to avoid rapid looping
+        draw.rectangle((0, 0, width, height), outline=0, fill=0)
+        start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
+        end_idx = min(total_essids, start_idx + OPTIONS_PER_PAGE)
+
+        for i in range(start_idx, end_idx):
+            essid, bssid = ESSIDS[i]  # Unpacking to get both ESSID and BSSID
+            if i == active_idx:
+                color = (0, 255, 0) if essid in excluded_essid else (255, 255, 0)  # Green if excluded, yellow otherwise
+                draw.text((6, (i - start_idx) * 10), f"> {essid}", font=font, fill=color)  # Highlight active option
+            else:
+                color = (0, 255, 0) if essid in excluded_essid else (255, 255, 255)  # Green if excluded, white otherwise
+                draw.text((6, (i - start_idx) * 10), f"  {essid}", font=font, fill=color)
+
+        draw_battery_bar()  # Ensure battery bar is drawn
+        disp.LCD_ShowImage(image, 0, 0)
+
+        active_idx = handle_scroll(active_idx, total_essids)
+
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+            essid, bssid = ESSIDS[active_idx]  # Store both selected values
+            if essid in excluded_essid:
+                excluded_essid.remove(essid)
+            else:
+                excluded_essid.append(essid)
+            debounce()
+
+        elif GPIO.input(KEY1_PIN) == GPIO.LOW:  # Exit on KEY1 press
+            break
 
 options = [
-    {"name": "PIXIE QUICK 30", "state": False, "command": "--wps-only --pixie --wps-time 30 -p 10"},
+    {"name": "PIXIE QUICK 30", "state": False, "command": "--wps-only --pixie --wps-time 30"},
+    {"name": "Scan and Exclude ESSIDs", "state": [], "command": None},
     {"name": "Scan WIFI", "state": False, "command": None},
-    {"name": "Scan Time", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(10, 101, 10)]},
+    {"name": "Scan Time", "state": "20", "command": "", "values": [str(i) for i in range(20, 101, 10)]},
     {"name": "LOOP RUN", "state": False, "command": "-inf"},
     {"name": "I", "state": selected_interface, "command": ""},
     {"name": "Refresh Interfaces", "state": False, "command": None},
@@ -305,7 +356,7 @@ options = [
     {"name": "Clients Only", "state": False, "command": "--clients-only"},
     {"name": "No Deauths", "state": False, "command": "--nodeauths"},
     {"name": "Deauth sec", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(31)]},
-    {"name": "PIXIE QUICK 60", "state": False, "command": "--wps-only --pixie --wps-time 60 -p 20"},
+    {"name": "PIXIE QUICK 60", "state": False, "command": "--wps-only --pixie --wps-time 60"},
     {"name": "DEAUTH QUICK 120", "state": False, "command": "--no-pmkid --no-wps -wpat 120"},
     {"name": "DEAUTH QUICK 240", "state": False, "command": "--no-pmkid --no-wps -wpat 240"},
     {"name": "Quit", "state": False, "command": None}
@@ -326,8 +377,8 @@ def display_message(message):
     while stealth_mode_active:
         exit_stealth_mode()
         time.sleep(0.1)  # Short delay to avoid rapid looping
-    draw.rectangle((0, 0, width, height), outline=0, fill=0)
-    draw.text((10, 10), message, font=font, fill=(255, 255, 255))
+    draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
+    draw_shadowed_text(draw, message, (10, 10), font, current_theme["text"], current_theme["shadow"])
     draw_battery_bar()  # Ensure battery bar is drawn
     disp.LCD_ShowImage(image, 0, 0)
     time.sleep(2) 
@@ -336,9 +387,9 @@ def display_top(message):
     while stealth_mode_active:
         exit_stealth_mode()
         time.sleep(0.1)  # Short delay to avoid rapid looping
-    draw.rectangle((0, 0, 128, 20), outline=0, fill=0)
+    draw.rectangle((0, 0, 128, 20), outline=0, fill=current_theme["background"])
     message = re.sub(r'\x1B\[[0-?9;]*[mK]', '', message)  # Remove ANSI color codes
-    draw.text((10, 0), message, font=font, fill=(255, 255, 255))
+    draw_shadowed_text(draw, message, (10, 0), font, current_theme["text"], current_theme["shadow"])
     draw_battery_bar()  # Ensure battery bar is drawn
     disp.LCD_ShowImage(image, 0, 0)
     time.sleep(1) 
@@ -362,8 +413,8 @@ def toggle_option(selection):
     elif option['name'] == "Scan Time":
         current_index = option["values"].index(option["state"])
         option["state"] = option["values"][(current_index + 1) % len(option["values"])]
-        option["command"] = f"-p {option['state']}" if option["state"] != "Off" else ""
-        
+        option["command"] = f"-p {option['state']}"
+
     # Special case for "WPS Time" option
     elif option['name'] == "WPS Time":
         current_index = option["values"].index(option["state"])
@@ -378,10 +429,11 @@ def toggle_option(selection):
 
     else:
         # Toggle state for boolean options
-        option["state"] = not option["state"]  # Corrected line
+        option["state"] = not option["state"]
 
 # Function to display specific lines from cracked.json on the LCD
 def display_file_on_lcd(filename):
+    debounce()
     while stealth_mode_active:
         exit_stealth_mode()
         time.sleep(0.1)  # Short delay to avoid rapid looping
@@ -393,7 +445,7 @@ def display_file_on_lcd(filename):
         return
 
     # Clear the screen before displaying new content
-    draw.rectangle((0, 0, width, height), outline=0, fill=0)
+    draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
 
     # Store lines that contain 'ESSID' or 'PSK'
     filtered_lines = []
@@ -433,9 +485,9 @@ def display_file_on_lcd(filename):
             exit_stealth_mode()
             time.sleep(0.1)  # Short delay to avoid rapid looping
         # Clear the screen and draw the lines to display
-        draw.rectangle((0, 0, width, height), outline=0, fill=0)
+        draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
         for i in range(start_idx, min(start_idx + (height // 10), len(filtered_lines))):
-            draw.text((10, (i - start_idx) * 10), filtered_lines[i], font=font, fill=(255, 255, 255))
+            draw_shadowed_text(draw, filtered_lines[i], (10, (i - start_idx) * 10), font, current_theme["text"], current_theme["shadow"])
 
         draw_battery_bar()  # Ensure battery bar is drawn
         disp.LCD_ShowImage(image, 0, 0)
@@ -473,7 +525,7 @@ def display_message_with_wrap(message, append=False, top=False):
         time.sleep(0.1)  # Short delay to avoid rapid looping
 
     # Maximum characters that fit on one line
-    max_chars_per_line = width // 5  # Approximation (depends on font size)
+    max_chars_per_line = width // 6  # Approximation (depends on font size)
     
     # Remove ASCII color codes
     message = re.sub(r'\x1B\[[0-?9;]*[mK]', '', message)  # ANSI escape code for colors
@@ -507,12 +559,12 @@ def display_message_with_wrap(message, append=False, top=False):
         displayed_lines = displayed_lines[-max_visible_lines:]  # Keep only the last few lines that fit
 
     # Clear the display before showing new content
-    draw.rectangle((0, 0, width, height), outline=0, fill=0)
+    draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
     draw_battery_bar()
 
     # Display the lines
     for i, line in enumerate(displayed_lines):
-        draw.text((10, (i * 10) + 20), line.strip(), font=font, fill=(255, 255, 255))
+        draw_shadowed_text(draw, line.strip(), (10, (i * 10) + 20), font, current_theme["text"], current_theme["shadow"])
 
     draw_battery_bar()  # Ensure battery bar is drawn
     disp.LCD_ShowImage(image, 0, 0)
@@ -539,7 +591,7 @@ def read_output_nonblocking(process, output_lines):
 
         # Display raw output (debugging line, can be removed)
         #display_message_with_wrap(f"Raw Output: {output_stripped}", append=False)
-
+        print({output_stripped})
         # Display ESSID and signal strength while scanning
         essid_scan_match = re.search(r'^\s*\d+\s+(.+?)\s+\d+\s+\S+\s+(\d+db)', output_stripped)
         if essid_scan_match:
@@ -554,7 +606,9 @@ def read_output_nonblocking(process, output_lines):
             if essid_match:
                 #disp.LCD_Clear()
                 current_mac = essid_match.group(1).strip()  # Extract mac address
-                current_essid = essid_match.group(2).strip()  # Extract essid
+                new_essid = essid_match.group(2).strip()  # Extract essid
+                if new_essid != "ESSID unknown":
+                    current_essid = new_essid
                 display_top(f"-> {current_essid}")
                 time.sleep(0.2)  # Keep the message on the screen longer
 
@@ -592,11 +646,10 @@ def read_output_nonblocking(process, output_lines):
     #    display_message_with_wrap(f"{essid} -> {result}", append=False)
 
 def build_and_run_command():
-    global selected_interface
+    global selected_interface, excluded_essid  # Ensure excluded_essid is referenced correctly
 
     selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
 
-   
     if selected_bssid is not None and any(option["state"] for option in options if option["name"] == "PIXIE"):
         check_monitor_mode_and_enable(selected_interface)
         command = ["sudo", "/usr/bin/reaver", "-i", selected_interface_name, "-vv", "--pixie-dust", "-b", selected_bssid]
@@ -640,9 +693,22 @@ def build_and_run_command():
         if selected_essid:
             command.append(f'-bssid "{selected_bssid}"')
 
+        # Ensure excluded_essid is a list
+        if not isinstance(excluded_essid, list):
+            excluded_essid = []
+
+        # Add excluded ESSIDs
+        for essid in excluded_essid:
+            command.append(f'-E {essid}')
+
+        # Add scan time if specified
+        scan_time_option = next((option for option in options if option["name"] == "Scan Time"), None)
+        if scan_time_option and scan_time_option["state"]:
+            command.append(f'-p {scan_time_option["state"]}')
+
         command_str = ' '.join(command)
         disp.LCD_Clear_Black()
-        #display_message_with_wrap(f"Running: {command_str}")
+        display_message_with_wrap(f"Running: {command_str}")
         time.sleep(1)
         draw.rectangle((0, 0, width, height), outline=0, fill=0)
 
@@ -676,7 +742,7 @@ def draw_menu(active_idx):
     while stealth_mode_active:
         exit_stealth_mode()
         time.sleep(0.1)  # Short delay to avoid rapid looping
-    draw.rectangle((0, 0, width, height), outline=0, fill=0)  # Clear screen
+    draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])  # Clear screen
 
     # Determine the start and end indices for the visible window
     start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)  # Show last few options when at the bottom
@@ -696,9 +762,9 @@ def draw_menu(active_idx):
             state_text = ""
 
         if i == active_idx:
-            draw.text((6, (i - start_idx) * 10), f"> {option['name']}: {state_text}", font=font, fill=(255, 255, 0))  # Highlight active option
+            draw_shadowed_text(draw, f"> {option['name']}: {state_text}", (6, (i - start_idx) * 10), font, current_theme["highlight"], current_theme["shadow"])  # Highlight active option
         else:
-            draw.text((6, (i - start_idx) * 10), f"  {option['name']}: {state_text}", font=font, fill=(255, 255, 255))  # Normal display
+            draw_shadowed_text(draw, f"  {option['name']}: {state_text}", (6, (i - start_idx) * 10), font, current_theme["text"], current_theme["shadow"])  # Normal display
 
     # Draw the battery bar
     draw_battery_bar()
@@ -726,7 +792,7 @@ def stealth():
 
     while stealth_mode_active:
         # Clear the screen
-        draw.rectangle((0, 0, width, height), outline=0, fill=0)
+        draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
 
         # Move the ball
         ball_pos[0] += ball_dir[0] * ball_speed
@@ -746,10 +812,10 @@ def stealth():
             ball_dir[1] = -ball_dir[1]
 
         # Draw the ball
-        draw.ellipse((ball_pos[0] - 2, ball_pos[1] - 2, ball_pos[0] + 2, ball_pos[1] + 2), fill=(255, 255, 255))
+        draw.ellipse((ball_pos[0] - 2, ball_pos[1] - 2, ball_pos[0] + 2, ball_pos[1] + 2), fill=current_theme["text"])
 
         # Draw the paddle
-        draw.rectangle((paddle_pos[0], paddle_pos[1], paddle_pos[0] + paddle_width, paddle_pos[1] + paddle_height), fill=(255, 255, 255))
+        draw.rectangle((paddle_pos[0], paddle_pos[1], paddle_pos[0] + paddle_width, paddle_pos[1] + paddle_height), fill=current_theme["text"])
 
         # Move the paddle
         if GPIO.input(KEY_LEFT_PIN) == GPIO.LOW and paddle_pos[0] > 0:
@@ -781,7 +847,7 @@ def splash_screen():
         if GPIO.input(KEY_UP_PIN) == GPIO.LOW or GPIO.input(KEY_DOWN_PIN) == GPIO.LOW or GPIO.input(KEY_PRESS_PIN) == GPIO.LOW or GPIO.input(KEY1_PIN) == GPIO.LOW or GPIO.input(KEY2_PIN) == GPIO.LOW or GPIO.input(KEY3_PIN) == GPIO.LOW:
             break
 
-        draw.rectangle((0, 0, width, height), outline=0, fill=0)
+        draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
 
         # Move the text
         text_pos[0] += text_dir[0] * text_speed
@@ -804,22 +870,17 @@ def splash_screen():
 
  #Update the menu loop to include scanning and selecting ESSIDs
 def menu_loop():
+    debounce()
     active_idx = 0
     total_options = len(options)
 
     while True:
         draw_menu(active_idx)
 
-        if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
-            active_idx = (active_idx - 1) % total_options  # Scroll up
-            debounce()
+        active_idx = handle_scroll(active_idx, total_options)
 
-        elif GPIO.input(KEY_DOWN_PIN) == GPIO.LOW:
-            active_idx = (active_idx + 1) % total_options  # Scroll down
-            debounce()
-
-        elif GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
-            selected_option = options[active_idx]
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+            selected_option = options[active_idx]  # Correctly define selected_option
             if selected_option.get("run_on_press"):
                 display_message("Showing: cracked.json")
                 display_file_on_lcd("cracked.json")
@@ -835,6 +896,8 @@ def menu_loop():
                 essid_selection_menu()  # After scanning, enter ESSID selection
             elif selected_option["name"] == "Refresh Interfaces":  # New option to refresh interfaces
                 refresh_interfaces()
+            elif selected_option["name"] == "Scan and Exclude ESSIDs":  # New option to scan and exclude ESSIDs
+                scan_and_toggle_essids()
             else:
                 # Toggle option
                 toggle_option(active_idx)
@@ -848,6 +911,115 @@ def menu_loop():
             stealth()
             debounce()
 
+        elif GPIO.input(KEY_LEFT_PIN) == GPIO.LOW:  # Go back to landing menu
+            landing_menu()
+            debounce()
+
+# Define color themes
+color_themes = [
+    {"name": "Default", "background": (30, 30, 30), "text": (255, 255, 255), "highlight": (255, 255, 0), "shadow": (50, 50, 50)},
+    {"name": "Cool Blue", "background": (50, 50, 50), "text": (173, 216, 230), "highlight": (0, 255, 255), "shadow": (30, 30, 30)},
+    {"name": "Warm Red", "background": (70, 70, 70), "text": (255, 182, 193), "highlight": (255, 69, 0), "shadow": (50, 50, 50)},
+    {"name": "Green Forest", "background": (40, 40, 40), "text": (144, 238, 144), "highlight": (34, 139, 34), "shadow": (20, 20, 20)},
+    {"name": "Cyberpunk", "background": (20, 20, 20), "text": (0, 255, 0), "highlight": (255, 0, 255), "shadow": (10, 10, 10)},
+    {"name": "Monochrome", "background": (10, 10, 10), "text": (200, 200, 200), "highlight": (255, 255, 255), "shadow": (5, 5, 5)}
+]
+
+# Set default theme
+current_theme = color_themes[0]
+
+def apply_theme(theme):
+    global current_theme, image, draw, font
+    current_theme = theme
+    image = Image.new('RGB', (width, height), color=current_theme["background"])
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+
+def draw_shadowed_text(draw, text, position, font, text_color, shadow_color):
+    x, y = position
+    draw.text((x + 1, y + 1), text, font=font, fill=shadow_color)  # Draw shadow
+    draw.text((x, y), text, font=font, fill=text_color)  # Draw text
+
+def setting_menu():
+    debounce()
+    active_idx = 0
+    total_themes = len(color_themes)
+
+    while True:
+        while stealth_mode_active:
+            exit_stealth_mode()
+            time.sleep(0.1)  # Short delay to avoid rapid looping
+        draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
+        start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
+        end_idx = min(total_themes, start_idx + OPTIONS_PER_PAGE)
+
+        for i in range(start_idx, end_idx):
+            theme = color_themes[i]
+            if i == active_idx:
+                draw_shadowed_text(draw, f"> {theme['name']}", (6, (i - start_idx) * 10), font, current_theme["highlight"], current_theme["shadow"])  # Highlight active option
+            else:
+                draw_shadowed_text(draw, f"  {theme['name']}", (6, (i - start_idx) * 10), font, current_theme["text"], current_theme["shadow"])
+
+        draw_battery_bar()  # Ensure battery bar is drawn
+        disp.LCD_ShowImage(image, 0, 0)
+
+        active_idx = handle_scroll(active_idx, total_themes)
+
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+            apply_theme(color_themes[active_idx])
+            #display_message(f"Theme set to: {color_themes[active_idx]['name']}")
+            debounce()
+            break
+
+        elif GPIO.input(KEY1_PIN) == GPIO.LOW or GPIO.input(KEY_LEFT_PIN) == GPIO.LOW:  # Exit on KEY1 or KEY_LEFT press
+            break
+
+def landing_menu():
+    debounce()
+    options = [
+        {"name": "Wifite", "action": menu_loop},
+        {"name": "Setting", "action": setting_menu},
+        {"name": "Show Crack", "action": lambda: display_file_on_lcd("cracked.json")}
+    ]
+    active_idx = 0
+    total_options = len(options)
+
+    while True:
+        while stealth_mode_active:
+            exit_stealth_mode()
+            time.sleep(0.1)  # Short delay to avoid rapid looping
+        draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
+        start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
+        end_idx = min(total_options, start_idx + OPTIONS_PER_PAGE)
+
+        for i in range(start_idx, end_idx):
+            option = options[i]
+            if i == active_idx:
+                draw_shadowed_text(draw, f"> {option['name']}", (6, (i - start_idx) * 10), font, current_theme["highlight"], current_theme["shadow"])  # Highlight active option
+            else:
+                draw_shadowed_text(draw, f"  {option['name']}", (6, (i - start_idx) * 10), font, current_theme["text"], current_theme["shadow"])
+
+        draw_battery_bar()  # Ensure battery bar is drawn
+        disp.LCD_ShowImage(image, 0, 0)
+
+        active_idx = handle_scroll(active_idx, total_options)
+
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+            options[active_idx]["action"]()
+            debounce()
+
+        #elif GPIO.input(KEY1_PIN) == GPIO.LOW or GPIO.input(KEY_LEFT_PIN) == GPIO.LOW:  # Exit on KEY1 or KEY_LEFT press
+        #    debounce()
+        #    break
+
+def handle_scroll(active_idx, total_items):
+    if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
+        active_idx = (active_idx - 1) % total_items  # Scroll up
+        debounce()
+    elif GPIO.input(KEY_DOWN_PIN) == GPIO.LOW:
+        active_idx = (active_idx + 1) % total_items  # Scroll down
+        debounce()
+    return active_idx
 
 # Main program loop
 if __name__ == "__main__":
@@ -866,7 +1038,5 @@ if __name__ == "__main__":
     button_thread.daemon = True
     button_thread.start()
 
-    menu_loop()  # Start the interactive menu
-    GPIO.cleanup()
-    menu_loop()  # Start the interactive menu
+    landing_menu()  # Start the landing menu
     GPIO.cleanup()
