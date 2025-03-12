@@ -27,9 +27,9 @@ use bullseye pi os lite 64bit
 - use crontab with tmux crontab -e >> /usr/bin/tmux new-seesion -d -s 6 '/usr/bin/python3 /path/to/pyhton.py'
 ----
 - sudo apt update && sudo apt upgrade -y
-- sudo apt install git
+- sudo apt install git python3-pip python3-venv
 - 
-- python3 -m -venv -venv
+- sudo python3 -m venv venv
 - source venv/bin/activate
 - pip3 install -r requirement.txt
 - sudo python3 setup.py install
