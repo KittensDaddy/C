@@ -49,3 +49,18 @@ https://github.com/Mange/rtl8192eu-linux-driver
 - echo "options 8192eu rtw_power_mgnt=0 rtw_enusbss=0" | sudo tee /etc/modprobe.d/8192eu.conf
 - sudo update-grub; sudo update-initramfs -u
 - sudo reboot
+----
+naming internal wifi
+----
+- sudo nano /etc/systemd/network/10-wlan_internal.link
+----
+- [Match]
+- Driver=brcmfmac
+- [Link]
+- Name=wl0
+----
+- sudo systemctl restart systemd-networkd
+- sudo reboot
+----
+
+
