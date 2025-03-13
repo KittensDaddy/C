@@ -5,7 +5,7 @@ import config
 import RPi.GPIO as GPIO
 import time
 import re
-from setting import OPTIONS_PER_PAGE, color_themes, KEY_UP_PIN, KEY_DOWN_PIN, KEY_LEFT_PIN, KEY_RIGHT_PIN, KEY_PRESS_PIN, KEY1_PIN, KEY2_PIN, KEY3_PIN, DEBOUNCE_TIME, stealth_mode_active, ina219
+from setting import debounce, options, OPTIONS_PER_PAGE, color_themes, KEY_UP_PIN, KEY_DOWN_PIN, KEY_LEFT_PIN, KEY_RIGHT_PIN, KEY_PRESS_PIN, KEY1_PIN, KEY2_PIN, KEY3_PIN, DEBOUNCE_TIME, stealth_mode_active, ina219
 
 # Set default theme
 current_theme = color_themes[0]
@@ -346,3 +346,66 @@ def splash_screen():
         draw_battery_bar()  # Ensure battery bar is drawn
         disp.LCD_ShowImage(image, 0, 0)
         time.sleep(0.05)
+
+# Non-blocking I/O helper to read subprocess output
+def read_output_nonblocking(process, output_lines):
+    while stealth_mode_active:
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
+    global current_essid, current_mac
+
+    essid_results = {}
+
+    for line in iter(process.stdout.readline, ''):
+        output_stripped = line.strip()
+
+        # Display raw output (debugging line, can be removed)
+        #display_message_with_wrap(f"Raw Output: {output_stripped}", append=False)
+        print({output_stripped})
+        # Display ESSID and signal strength while scanning
+        essid_scan_match = re.search(r'^\s*\d+\s+(.+?)\s+\d+\s+\S+\s+(\d+db)', output_stripped)
+        if essid_scan_match:
+            essid_scan = essid_scan_match.group(1).strip()
+            signal_strength = essid_scan_match.group(2).strip()
+            display_message_with_wrap(f"Scanning: {essid_scan} ({signal_strength})", append=True)
+            time.sleep(0.1)
+
+        # Check for "Starting attacks against" message and update ESSID/MAC
+        if "Starting attacks against" in output_stripped:
+            essid_match = re.search(r'Starting attacks against (.+?) \((.*?)\)$', output_stripped)
+            if essid_match:
+                #disp.LCD_Clear()
+                current_mac = essid_match.group(1).strip()  # Extract mac address
+                new_essid = essid_match.group(2).strip()  # Extract essid
+                if new_essid != "unknown":
+                    current_essid = new_essid
+                display_top(f"-> {current_essid}")
+                time.sleep(0.2)  # Keep the message on the screen longer
+
+        # Handle output like targets and clients found
+        matches = re.findall(r'\x1b\[[0-9;]*m.*?Found.*?\x1b\[[0-9;]*m(\d+).*?target\(s\).*?\x1b\[[0-9;]*m(\d+).*?client\(s\)', output_stripped)
+        for match in matches:
+            target_count, client_count = match
+            output_lines.append(f"{target_count} targets, {client_count} clients")
+
+            # Update display with ESSID and other information
+            #display_message_with_wrap(f"-> {current_essid}", append=True, top=True)
+            time.sleep(0.1)  # Keep this info on the screen for 2 seconds before continuing
+
+        # Display important lines from wifite output
+        if "WPA Handshake" in output_stripped:
+            essid_results[current_essid] = "cracked"
+            display_message_with_wrap(f"{current_essid} -> cracked", append=True)
+            time.sleep(0.1)
+        elif "Cracked" in output_stripped:
+            if "PSK/Password: N/A" in output_stripped:
+                essid_results[current_essid] = "cracked"
+                display_message_with_wrap(f"{current_essid} > cracked", append=True)
+            else:
+                essid_results[current_essid] = "psk"
+                display_message_with_wrap(f"{current_essid} > password", append=True)
+            time.sleep(0.1)
+        elif "Failed" in output_stripped:
+            essid_results[current_essid] = "failed"
+            display_message_with_wrap(f"{current_essid} > failed", append=True)
+            time.sleep(0.1)

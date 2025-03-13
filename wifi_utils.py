@@ -2,11 +2,12 @@ import subprocess
 import time
 import threading
 import re
-from setting import stealth_mode_active
+from setting import stealth_mode_active, options
 from display import (display_message, display_message_with_wrap, exit_stealth_mode,
-                    display_top, disp, draw, width, height, is_stealth_mode_active)
+                    display_top, disp, draw, width, height, is_stealth_mode_active, read_output_nonblocking)
 from essid_utils import ESSIDS, excluded_essid, selected_essid, selected_bssid
-from menu_utils import options
+from interface_utils import check_monitor_mode_and_enable, check_monitor_mode_and_disable
+from command_utils import build_and_run_command, build_and_run_command_with_option
 
 def check_monitor_mode_and_enable(interface):
     interface_name = interface[0] if isinstance(interface, tuple) else interface
@@ -100,69 +101,6 @@ def scan_wifi_networks():
         time.sleep(0.2)  # Add a slight delay between scans to avoid overloading the system
 
     print("Wi-Fi scan completed.")
-
-# Non-blocking I/O helper to read subprocess output
-def read_output_nonblocking(process, output_lines):
-    while stealth_mode_active:
-        exit_stealth_mode()
-        time.sleep(0.1)  # Short delay to avoid rapid looping
-    global current_essid, current_mac
-
-    essid_results = {}
-
-    for line in iter(process.stdout.readline, ''):
-        output_stripped = line.strip()
-
-        # Display raw output (debugging line, can be removed)
-        #display_message_with_wrap(f"Raw Output: {output_stripped}", append=False)
-        print({output_stripped})
-        # Display ESSID and signal strength while scanning
-        essid_scan_match = re.search(r'^\s*\d+\s+(.+?)\s+\d+\s+\S+\s+(\d+db)', output_stripped)
-        if essid_scan_match:
-            essid_scan = essid_scan_match.group(1).strip()
-            signal_strength = essid_scan_match.group(2).strip()
-            display_message_with_wrap(f"Scanning: {essid_scan} ({signal_strength})", append=True)
-            time.sleep(0.1)
-
-        # Check for "Starting attacks against" message and update ESSID/MAC
-        if "Starting attacks against" in output_stripped:
-            essid_match = re.search(r'Starting attacks against (.+?) \((.*?)\)$', output_stripped)
-            if essid_match:
-                #disp.LCD_Clear()
-                current_mac = essid_match.group(1).strip()  # Extract mac address
-                new_essid = essid_match.group(2).strip()  # Extract essid
-                if new_essid != "unknown":
-                    current_essid = new_essid
-                display_top(f"-> {current_essid}")
-                time.sleep(0.2)  # Keep the message on the screen longer
-
-        # Handle output like targets and clients found
-        matches = re.findall(r'\x1b\[[0-9;]*m.*?Found.*?\x1b\[[0-9;]*m(\d+).*?target\(s\).*?\x1b\[[0-9;]*m(\d+).*?client\(s\)', output_stripped)
-        for match in matches:
-            target_count, client_count = match
-            output_lines.append(f"{target_count} targets, {client_count} clients")
-
-            # Update display with ESSID and other information
-            #display_message_with_wrap(f"-> {current_essid}", append=True, top=True)
-            time.sleep(0.1)  # Keep this info on the screen for 2 seconds before continuing
-
-        # Display important lines from wifite output
-        if "WPA Handshake" in output_stripped:
-            essid_results[current_essid] = "cracked"
-            display_message_with_wrap(f"{current_essid} -> cracked", append=True)
-            time.sleep(0.1)
-        elif "Cracked" in output_stripped:
-            if "PSK/Password: N/A" in output_stripped:
-                essid_results[current_essid] = "cracked"
-                display_message_with_wrap(f"{current_essid} > cracked", append=True)
-            else:
-                essid_results[current_essid] = "psk"
-                display_message_with_wrap(f"{current_essid} > password", append=True)
-            time.sleep(0.1)
-        elif "Failed" in output_stripped:
-            essid_results[current_essid] = "failed"
-            display_message_with_wrap(f"{current_essid} > failed", append=True)
-            time.sleep(0.1)
             
 def build_and_run_command():
     global selected_interface, excluded_essid  # Ensure excluded_essid is referenced correctly

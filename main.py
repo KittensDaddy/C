@@ -6,8 +6,7 @@ import threading
 from setting import (KEY_UP_PIN, KEY_DOWN_PIN, KEY_PRESS_PIN, KEY1_PIN, 
                     KEY2_PIN, KEY3_PIN)
 from display import splash_screen
-from menu_utils import landing_menu
-from interface_utils import monitor_buttons
+from menu_utils import landing_menu, monitor_buttons
 from essid_utils import ESSIDS, excluded_essid, selected_essid, selected_bssid
 
 os.environ["GPG_TTY"] = "/dev/tty1"

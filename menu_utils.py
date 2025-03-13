@@ -1,12 +1,19 @@
 import RPi.GPIO as GPIO
 from setting import (KEY_UP_PIN, KEY_DOWN_PIN, KEY_PRESS_PIN, KEY1_PIN, KEY2_PIN, 
                     KEY_LEFT_PIN, DEBOUNCE_TIME, stealth_mode_active, color_themes,
-                    debounce, apply_theme)
+                    debounce, apply_theme, OPTIONS_PER_PAGE, options)
 from display import (display_message, display_file_on_lcd, draw_menu, 
                     exit_stealth_mode, stealth, draw_shadowed_text, disp, draw, font,
-                    width, height, current_theme, draw_battery_bar)
-from wifi_utils import scan_wifi_networks, build_and_run_command, build_and_run_command_with_option
-from interface_utils import refresh_interfaces, wireless_interfaces
+                    width, height, current_theme, draw_battery_bar, display_message_with_wrap, display_top, is_stealth_mode_active, image)
+from interface_utils import selected_interface, wireless_interfaces, get_wireless_interfaces, check_monitor_mode_and_enable, check_monitor_mode_and_disable
+import time
+import subprocess
+import re
+import threading
+from essid_utils import ESSIDS, excluded_essid, selected_essid, selected_bssid
+from command_utils import build_and_run_command, build_and_run_command_with_option
+
+current_index = 0
 
 def handle_scroll(active_idx, total_items):
     if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
@@ -66,11 +73,25 @@ def menu_loop():
 
 def landing_menu():
     debounce()
+    global selected_interface, wireless_interfaces
+    wireless_interfaces = get_wireless_interfaces()
+    if len(wireless_interfaces) > 1:
+        selected_interface = wireless_interfaces[1]
+    else:
+        selected_interface = wireless_interfaces[0]
+    
+    if not wireless_interfaces:
+        display_message("No wireless interfaces found!")
+        return
+        
+    if selected_interface is None and wireless_interfaces:
+        selected_interface = wireless_interfaces[0]  # Initialize with first available interface
+
     options = [
         {"name": "Wifite", "action": menu_loop},
         {"name": "Setting", "action": setting_menu},
         {"name": "Show Crack", "action": lambda: display_file_on_lcd("cracked.json")},
-        {"name": "Select Interface", "action": lambda: toggle_option_by_name("I")},
+        {"name": f"{selected_interface}", "action": toggle_interface},  # Change None to toggle_interface
         {"name": "Refresh Interfaces", "action": refresh_interfaces},
         {"name": "PIXIE QUICK 30", "action": lambda: build_and_run_command_with_option("PIXIE QUICK 30")},
         {"name": "DEAUTH QUICK 120", "action": lambda: build_and_run_command_with_option("DEAUTH QUICK 120")}
@@ -100,11 +121,20 @@ def landing_menu():
 
         if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
             options[active_idx]["action"]()
+            if options[active_idx]["name"].startswith(str(selected_interface)):
+                # Update the displayed interface name after toggling
+                options[3]["name"] = str(selected_interface)
             debounce()
 
-        #elif GPIO.input(KEY1_PIN) == GPIO.LOW or GPIO.input(KEY_LEFT_PIN) == GPIO.LOW:  # Exit on KEY1 or KEY_LEFT press
-        #    debounce()
-        #    break
+def toggle_interface():
+    global selected_interface
+    if selected_interface is None and wireless_interfaces:
+        selected_interface = wireless_interfaces[0]  # Initialize selected_interface if it's None
+
+    current_index = wireless_interfaces.index(selected_interface)
+    selected_interface = wireless_interfaces[(current_index + 1) % len(wireless_interfaces)]
+    display_message(f"Selected interface: {selected_interface}")
+    print(f"Selected interface: {selected_interface}")
 
 def setting_menu():
     debounce()
@@ -115,7 +145,7 @@ def setting_menu():
         while stealth_mode_active:
             exit_stealth_mode()
             time.sleep(0.1)  # Short delay to avoid rapid looping
-        draw.rectangle(0, 0, width, height), outline=0, fill(current_theme["background"])
+        draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
         start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
         end_idx = min(total_themes, start_idx + OPTIONS_PER_PAGE)
 
@@ -150,9 +180,15 @@ def toggle_option(selection):
             current_index = wireless_interfaces.index(option["state"])
         except ValueError:
             current_index = 0  # Default to the first interface if not found
-        option["state"] = wireless_interfaces[(current_index + 1) % len(wireless_interfaces)]
+        new_interface = wireless_interfaces[(current_index + 1) % len(wireless_interfaces)]
+        option["state"] = new_interface
         global selected_interface  # Update the selected interface globally
-        selected_interface = option["state"]
+        selected_interface = new_interface
+
+        # Update the option name in the landing menu
+        for landing_option in options:
+            if "Interface:" in landing_option["name"]:
+                landing_option["name"] = f"Interface: {selected_interface}"
         print(f"Selected interface: {selected_interface}")
 
     # Special case for "Scan Time" option
@@ -181,29 +217,7 @@ def toggle_option_by_name(option_name):
     option = next((opt for opt in options if opt["name"] == option_name), None)
     if option:
         toggle_option(options.index(option))
-
-# Define menu options
-options = [
-    {"name": "Scan and Exclude ESSIDs", "state": [], "command": None},
-    {"name": "Scan WIFI", "state": False, "command": None},
-    {"name": "Scan Time", "state": "10", "command": "", "values": [str(i) for i in range(10, 101, 10)]},
-    {"name": "LOOP RUN", "state": False, "command": "-inf"},
-    {"name": "Deauth", "state": False, "command": "--no-wps --no-pmkid"},
-    {"name": "PIXIE", "state": False, "command": "--wps-only --pixie"},
-    {"name": "WPS Time", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(60, 300, 10)]},
-    {"name": "Deauth+PIXIE", "state": False, "command": "--no-pmkid --pixie"},
-    {"name": "PMKID", "state": False, "command": "--no-wps --pmkid"},
-    {"name": "No PMKID", "state": False, "command": "--no-pmkid"},
-    {"name": "All Band", "state": False, "command": "-ab"},
-    {"name": "Show Cracked", "command": None, "run_on_press": True},
-    {"name": "Clients Only", "state": False, "command": "--clients-only"},
-    {"name": "No Deauths", "state": False, "command": "--nodeauths"},
-    {"name": "Deauth sec", "state": "Off", "command": "", "values": ["Off"] + [str(i) for i in range(31)]},
-    {"name": "PIXIE QUICK 60", "state": False, "command": "--wps-only --pixie --wps-time 60"},
-    {"name": "DEAUTH QUICK 240", "state": False, "command": "--no-pmkid --no-wps -wpat 240"},
-    {"name": "Quit", "state": False, "command": None}
-]
-
+        
 def monitor_buttons():
     global stealth_mode_active
     while True:
@@ -220,3 +234,259 @@ def monitor_buttons():
             stealth_mode_active = False
 
         time.sleep(0.05)  # Short delay to avoid rapid looping
+
+def essid_selection_menu():
+    global selected_essid, selected_bssid, ESSIDS
+
+    if not ESSIDS:
+        display_message("No Wi-Fi networks to display")
+        return
+    
+    active_idx = 0
+    total_essids = len(ESSIDS)
+
+    while True:
+        while stealth_mode_active:
+            exit_stealth_mode()
+            time.sleep(0.1)  # Short delay to avoid rapid looping
+        draw.rectangle((0, 0, width, height), outline=0, fill=0)
+        start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
+        end_idx = min(total_essids, start_idx + OPTIONS_PER_PAGE)
+
+        for i in range(start_idx, end_idx):
+            essid, bssid = ESSIDS[i]  # Unpacking to get both ESSID and BSSID
+            if i == active_idx:
+                draw.text((6, (i - start_idx) * 10), f"> {essid}", font=font, fill=(255, 255, 0))  # Highlight active option
+            else:
+                draw.text((6, (i - start_idx) * 10), f"  {essid}", font=font, fill=(255, 255, 255))
+
+        draw_battery_bar()  # Ensure battery bar is drawn
+        disp.LCD_ShowImage(image, 0, 0)
+
+        active_idx = handle_scroll(active_idx, total_essids)
+
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+            selected_essid, selected_bssid = ESSIDS[active_idx]  # Store both selected values
+            display_message(f"Selected: {selected_essid}, BSSID: {selected_bssid}")
+            time.sleep(0.3)
+            return  # Exit the menu after selection
+
+def scan_and_toggle_essids():
+    global ESSIDS
+    ESSIDS.clear()  # Clear previous scan results
+
+    # Scan for Wi-Fi networks
+    scan_wifi_networks()
+
+    # Display the ESSID selection menu for toggling exclusion
+    essid_selection_menu_for_exclusion()
+
+def essid_selection_menu_for_exclusion():
+    global ESSIDS, excluded_essid
+
+    if not ESSIDS:
+        display_message("No Wi-Fi networks to display")
+        return
+    
+    active_idx = 0
+    total_essids = len(ESSIDS)
+
+    while True:
+        while stealth_mode_active:
+            exit_stealth_mode()
+            time.sleep(0.1)
+        draw.rectangle((0, 0, width, height), outline=0, fill=0)
+        start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
+        end_idx = min(total_essids, start_idx + OPTIONS_PER_PAGE)
+
+        for i in range(start_idx, end_idx):
+            essid, bssid = ESSIDS[i]
+            if i == active_idx:
+                color = (0, 255, 0) if essid in excluded_essid else (255, 255, 0)
+                draw.text((6, (i - start_idx) * 10), f"> {essid}", font=font, fill=color)
+            else:
+                color = (0, 255, 0) if essid in excluded_essid else (255, 255, 255)
+                draw.text((6, (i - start_idx) * 10), f"  {essid}", font=font, fill=color)
+
+        draw_battery_bar()
+        disp.LCD_ShowImage(image, 0, 0)
+
+        active_idx = handle_scroll(active_idx, total_essids)  # handle_scroll already includes debounce
+
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+            essid, bssid = ESSIDS[active_idx]
+            if essid in excluded_essid:
+                excluded_essid.remove(essid)
+            else:
+                excluded_essid.append(essid)
+            debounce()  # Only debounce once after button press
+
+        elif GPIO.input(KEY1_PIN) == GPIO.LOW:  # Exit on KEY1 press
+            debounce()
+            break
+
+def scan_wifi_networks():
+    global ESSIDS, current_index
+    ESSIDS.clear()
+
+    # Get scan duration
+    scan_time_option = next(option for option in options if option["name"] == "Scan Time")
+    scan_duration = int(scan_time_option["state"])
+
+    display_message(f"Scanning for {scan_duration} seconds...")
+    selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
+    display_message_with_wrap(f"{selected_interface}, {selected_interface_name}")
+
+    # Get currently connected ESSID safely
+    connected_essid = None
+    try:
+        connected_result = subprocess.run(["/usr/sbin/iwconfig", selected_interface_name], 
+                                     capture_output=True, text=True)
+        for line in connected_result.stdout.splitlines():
+            if "ESSID:" in line:
+                try:
+                    essid_parts = line.split('ESSID:"')
+                    if len(essid_parts) > 1:
+                        connected_essid = essid_parts[1].split('"')[0]
+                except (IndexError, Exception) as e:
+                    print(f"Error parsing connected ESSID: {e}")
+                break
+    except subprocess.CalledProcessError as e:
+        print(f"Error getting connected network: {e}")
+
+    rescan_attempts = 0
+    max_rescans = 3
+    finished = False
+    while not finished:
+        start_time = time.time()
+        while time.time() - start_time < scan_duration and rescan_attempts < max_rescans:
+            check_monitor_mode_and_disable(selected_interface_name)
+            result = subprocess.run(["/usr/sbin/iwlist", selected_interface_name, "scan"], capture_output=True, text=True)
+            
+            # Parse scan results
+            lines = result.stdout.splitlines()
+            current_bssid = None
+            scan_essids_count = 0
+
+            for line in lines:
+                if "Address:" in line:
+                    try:
+                        current_bssid = line.split("Address:")[1].strip()
+                    except IndexError:
+                        continue
+                elif "ESSID" in line:
+                    try:
+                        essid = line.split(":")[1].strip().strip('"')
+                        scan_essids_count += 1
+                        if essid and current_bssid:
+                            if (essid, current_bssid) not in ESSIDS:
+                                ESSIDS.append((essid, current_bssid))
+                                display_message_with_wrap(f"{essid}", append=True)
+                                print(f"{essid}, {current_bssid}")
+                    except IndexError:
+                        continue
+
+        if scan_essids_count == 1 and connected_essid and connected_essid in [essid for essid, _ in ESSIDS]:
+                print("Only connected network found, resetting interface...")
+                display_message("Resetting interface...")
+                ESSIDS.clear()
+                
+                try:
+                    subprocess.run(["sudo", "ip", "link", "set", selected_interface_name, "down"], check=True)
+                    time.sleep(1)
+                    subprocess.run(["sudo", "ip", "link", "set", selected_interface_name, "up"], check=True)
+                    time.sleep(2)
+                    display_message(f"Rescanning... Attempt {rescan_attempts + 1}")
+                except subprocess.CalledProcessError as e:
+                    print(f"Error resetting interface: {e}")
+                    break
+        elif scan_essids_count >=1 and time.time() - start_time >= scan_duration or rescan_attempts >= max_rescans:
+            finished = True
+
+    if not ESSIDS:
+        display_message("No networks found!")
+    elif len(ESSIDS) <= 1 and rescan_attempts >= max_rescans:
+        display_message("Limited scan results after multiple attempts")
+    
+    print("Wi-Fi scan completed.")
+
+# Non-blocking I/O helper to read subprocess output
+def read_output_nonblocking(process, output_lines):
+    while stealth_mode_active:
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
+    global current_essid, current_mac
+
+    essid_results = {}
+
+    for line in iter(process.stdout.readline, ''):
+        output_stripped = line.strip()
+
+        # Display raw output (debugging line, can be removed)
+        #display_message_with_wrap(f"Raw Output: {output_stripped}", append=False)
+        print({output_stripped})
+        # Display ESSID and signal strength while scanning
+        essid_scan_match = re.search(r'^\s*\d+\s+(.+?)\s+\d+\s+\S+\s+(\d+db)', output_stripped)
+        if essid_scan_match:
+            essid_scan = essid_scan_match.group(1).strip()
+            signal_strength = essid_scan_match.group(2).strip()
+            display_message_with_wrap(f"Scanning: {essid_scan} ({signal_strength})", append=True)
+            time.sleep(0.1)
+
+        # Check for "Starting attacks against" message and update ESSID/MAC
+        if "Starting attacks against" in output_stripped:
+            essid_match = re.search(r'Starting attacks against (.+?) \((.*?)\)$', output_stripped)
+            if essid_match:
+                #disp.LCD_Clear()
+                current_mac = essid_match.group(1).strip()  # Extract mac address
+                new_essid = essid_match.group(2).strip()  # Extract essid
+                if new_essid != "unknown":
+                    current_essid = new_essid
+                display_top(f"-> {current_essid}")
+                time.sleep(0.2)  # Keep the message on the screen longer
+
+        # Handle output like targets and clients found
+        matches = re.findall(r'\x1b\[[0-9;]*m.*?Found.*?\x1b\[[0-9;]*m(\d+).*?target\(s\).*?\x1b\[[0-9;]*m(\d+).*?client\(s\)', output_stripped)
+        for match in matches:
+            target_count, client_count = match
+            output_lines.append(f"{target_count} targets, {client_count} clients")
+
+            # Update display with ESSID and other information
+            #display_message_with_wrap(f"-> {current_essid}", append=True, top=True)
+            time.sleep(0.1)  # Keep this info on the screen for 2 seconds before continuing
+
+        # Display important lines from wifite output
+        if "WPA Handshake" in output_stripped:
+            essid_results[current_essid] = "cracked"
+            display_message_with_wrap(f"{current_essid} -> cracked", append=True)
+            time.sleep(0.1)
+        elif "Cracked" in output_stripped:
+            if "PSK/Password: N/A" in output_stripped:
+                essid_results[current_essid] = "cracked"
+                display_message_with_wrap(f"{current_essid} > cracked", append=True)
+            else:
+                essid_results[current_essid] = "psk"
+                display_message_with_wrap(f"{current_essid} > password", append=True)
+            time.sleep(0.1)
+        elif "Failed" in output_stripped:
+            essid_results[current_essid] = "failed"
+            display_message_with_wrap(f"{current_essid} > failed", append=True)
+            time.sleep(0.1)
+
+def refresh_interfaces():
+    global wireless_interfaces, selected_interface, current_index
+    wireless_interfaces.clear()  # Clear old interfaces
+    wireless_interfaces = get_wireless_interfaces()
+    
+    if len(wireless_interfaces) > 1:
+        selected_interface = wireless_interfaces[1]
+    else:
+        selected_interface = wireless_interfaces[0]
+    
+    # Update the "I" option with the new selected interface
+    for option in options:
+        if option["name"] == "I":
+            option["state"] = selected_interface
+    
+    display_message("Interfaces refreshed")
+    draw_menu(current_index)  # Redraw the menu to reflect the changes
