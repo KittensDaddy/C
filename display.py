@@ -21,6 +21,15 @@ font = ImageFont.load_default()
 def is_stealth_mode_active():
     return stealth_mode_active
 
+def handle_scroll(active_idx, total_items):
+    if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
+        active_idx = (active_idx - 1) % total_items  # Scroll up
+        debounce()
+    elif GPIO.input(KEY_DOWN_PIN) == GPIO.LOW:
+        active_idx = (active_idx + 1) % total_items  # Scroll down
+        debounce()
+    return active_idx
+
 def draw_battery_bar():
     bus_voltage = ina219.getBusVoltage_V()             # voltage on V- (load side)
     shunt_voltage = ina219.getShuntVoltage_mV() / 1000 # voltage between V+ and V- across the shunt

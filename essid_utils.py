@@ -3,8 +3,7 @@ import RPi.GPIO as GPIO
 from setting import (KEY_PRESS_PIN, KEY1_PIN, OPTIONS_PER_PAGE, 
                     stealth_mode_active, debounce)
 from display import (display_message, exit_stealth_mode, draw, disp, font, 
-                    width, height, draw_battery_bar, image)
-from menu_utils import handle_scroll
+                    width, height, draw_battery_bar, image, handle_scroll)
 
 ESSIDS = []  # List to store scanned ESSIDs
 excluded_essid = []  # List to store excluded ESSIDs

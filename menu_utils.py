@@ -2,7 +2,7 @@ import RPi.GPIO as GPIO
 from setting import (KEY_UP_PIN, KEY_DOWN_PIN, KEY_PRESS_PIN, KEY1_PIN, KEY2_PIN, 
                     KEY_LEFT_PIN, DEBOUNCE_TIME, stealth_mode_active, color_themes,
                     debounce, apply_theme, OPTIONS_PER_PAGE, options)
-from display import (display_message, display_file_on_lcd, draw_menu, 
+from display import (handle_scroll, display_message, display_file_on_lcd, draw_menu, 
                     exit_stealth_mode, stealth, draw_shadowed_text, disp, draw, font,
                     width, height, current_theme, draw_battery_bar, display_message_with_wrap, display_top, is_stealth_mode_active, image)
 from interface_utils import selected_interface, wireless_interfaces, get_wireless_interfaces, check_monitor_mode_and_enable, check_monitor_mode_and_disable
@@ -11,18 +11,10 @@ import subprocess
 import re
 import threading
 from essid_utils import ESSIDS, excluded_essid, selected_essid, selected_bssid
-from command_utils import build_and_run_command, build_and_run_command_with_option
+from command_utils import build_and_run_command
 
 current_index = 0
 
-def handle_scroll(active_idx, total_items):
-    if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
-        active_idx = (active_idx - 1) % total_items  # Scroll up
-        debounce()
-    elif GPIO.input(KEY_DOWN_PIN) == GPIO.LOW:
-        active_idx = (active_idx + 1) % total_items  # Scroll down
-        debounce()
-    return active_idx
 
  #Update the menu loop to include scanning and selecting ESSIDs
 def menu_loop():
@@ -93,8 +85,8 @@ def landing_menu():
         {"name": "Show Crack", "action": lambda: display_file_on_lcd("cracked.json")},
         {"name": f"{selected_interface}", "action": toggle_interface},  # Change None to toggle_interface
         {"name": "Refresh Interfaces", "action": refresh_interfaces},
-        {"name": "PIXIE QUICK 30", "action": lambda: build_and_run_command_with_option("PIXIE QUICK 30")},
-        {"name": "DEAUTH QUICK 120", "action": lambda: build_and_run_command_with_option("DEAUTH QUICK 120")}
+        {"name": "PIXIE QUICK 30", "action": lambda: build_and_run_command("PIXIE QUICK 30")},
+        {"name": "DEAUTH QUICK 120", "action": lambda: build_and_run_command("DEAUTH QUICK 120")}
     ]
     active_idx = 0
     total_options = len(options)
