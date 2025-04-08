@@ -1,5 +1,3 @@
-ToDO
-
 
 - ~~show currently attack ESSID~~
 - ~~Scan wifi and select for specific attack~~
@@ -7,7 +5,7 @@ ToDO
 - battery life test
 - performance and stability test
 - temperature test
-- better ui
+- ~~better ui~~
 - ~~stealth mode~~
 - screensaver
 - ~~no wlan0 default~~
@@ -19,8 +17,9 @@ ToDO
 - ~~add progress tracking when attack~~
 - ~~reduce boot time~~
 - ~~additional menu for selected wifi attack mode~~
-- migrate from RPi.GPIO to LGPIO to use bookworm
-- 
+- ~~migrate from RPi.GPIO to LGPIO to use bookworm~~ no need for now
+- highlight cracked or handshake capture ssid when scan for attack of exclude
+- progress bar update for all attack
 ----
 use bookworm but sudo apt install python3-rpi.gpio
 ----
