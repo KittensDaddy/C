@@ -25,8 +25,8 @@ stealth_mode_active = False
 ina219 = INA219(addr=0x43)
 
 # Initialize LCD dimensions
-width = LCD_1in44.LCD_WIDTH
-height = LCD_1in44.LCD_HEIGHT
+#width = LCD_1in44.LCD_WIDTH
+#height = LCD_1in44.LCD_HEIGHT
 
 # Default values for image and drawing
 image = None
@@ -66,7 +66,7 @@ color_themes = [
 options = [
     {"name": "Scan and Exclude ESSIDs", "state": [], "command": None},
     {"name": "Scan WIFI", "state": False, "command": None},
-    {"name": "Scan Time", "state": "20", "command": "", "values": [str(i) for i in range(20, 101, 10)]},
+    {"name": "Scan Time", "state": "10", "command": "", "values": [str(i) for i in range(10, 101, 10)]},
     {"name": "LOOP RUN", "state": False, "command": "-inf"},
     {"name": "Deauth", "state": False, "command": "--no-wps --no-pmkid"},
     {"name": "PIXIE", "state": False, "command": "--wps-only --pixie"},
