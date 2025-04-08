@@ -7,7 +7,7 @@ import sys
 import time
 
 # Flag to indicate which GPIO library to use
-USE_LGPIO = True
+USE_LGPIO = False
 
 try:
     if USE_LGPIO:
