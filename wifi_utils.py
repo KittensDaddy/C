@@ -2,12 +2,16 @@ import subprocess
 import time
 import threading
 import re
+import lgpio
 from setting import stealth_mode_active, options
 from display import (display_message, display_message_with_wrap, exit_stealth_mode,
                     display_top, disp, draw, width, height, is_stealth_mode_active, read_output_nonblocking)
 from essid_utils import ESSIDS, excluded_essid, selected_essid, selected_bssid
 from interface_utils import check_monitor_mode_and_enable, check_monitor_mode_and_disable
 from command_utils import build_and_run_command, build_and_run_command_with_option
+
+# Initialize GPIO chip
+chip = lgpio.gpiochip_open(0)
 
 def check_monitor_mode_and_enable(interface):
     interface_name = interface[0] if isinstance(interface, tuple) else interface
@@ -251,3 +255,6 @@ def build_and_run_command_with_option(option_name):
     except Exception as e:
         display_message(f"Error: {e}")
         time.sleep(2)
+
+# Replace GPIO cleanup
+lgpio.gpiochip_close(chip)

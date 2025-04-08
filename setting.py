@@ -1,6 +1,7 @@
 import time
 from INA219 import INA219
 from PIL import ImageFont, Image, ImageDraw
+from gpio_manager import GPIOManager
 
 # Constants
 OPTIONS_PER_PAGE = 11
@@ -22,6 +23,9 @@ stealth_mode_active = False
 
 # Initialize INA219 sensor
 ina219 = INA219(addr=0x43)
+
+# Initialize GPIO manager
+gpio_manager = GPIOManager()
 
 # Default values for image and drawing
 image = None

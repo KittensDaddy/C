@@ -28,7 +28,8 @@ import spidev
 import time
 import logging
 import numpy as np
-from gpiozero import *
+import lgpio
+from gpio_manager import GPIOManager
 
 #GPIO define
 KEY_UP_PIN     = 6 
@@ -41,88 +42,71 @@ KEY1_PIN       = 21
 KEY2_PIN       = 20
 KEY3_PIN       = 16
 
+# Initialize GPIO manager
+gpio_manager = GPIOManager()
+
 class RaspberryPi:
-    def __init__(self,spi=spidev.SpiDev(0,0),spi_freq=40000000,rst = 27,dc = 25,bl = 24,bl_freq=1000,i2c=None,i2c_freq=100000):
-        self.np=np
+    def __init__(self, spi=spidev.SpiDev(0, 0), spi_freq=40000000, rst=27, dc=25, bl=24, bl_freq=1000, i2c=None, i2c_freq=100000):
+        self.np = np
         self.INPUT = False
         self.OUTPUT = True
 
-        self.SPEED  =spi_freq
-        self.BL_freq=bl_freq
+        self.SPEED = spi_freq
+        self.BL_freq = bl_freq
 
-        self.GPIO_RST_PIN= self.gpio_mode(rst,self.OUTPUT)
-        self.GPIO_DC_PIN = self.gpio_mode(dc,self.OUTPUT)
-        self.GPIO_BL_PIN = self.gpio_pwm(bl)
+        self.GPIO_RST_PIN = rst
+        self.GPIO_DC_PIN = dc
+        self.GPIO_BL_PIN = bl
         self.bl_DutyCycle(0)
-        
-        #init GPIO
-        # for P4:
-        # sudo vi /boot/config.txt
-        # gpio=6,19,5,26,13,21,20,16=pu
 
-        self.GPIO_KEY_UP_PIN     = self.gpio_mode(KEY_UP_PIN,self.INPUT,True,None)
-        self.GPIO_KEY_DOWN_PIN   = self.gpio_mode(KEY_DOWN_PIN,self.INPUT,True,None)
-        self.GPIO_KEY_LEFT_PIN   = self.gpio_mode(KEY_LEFT_PIN,self.INPUT,True,None)
-        self.GPIO_KEY_RIGHT_PIN  = self.gpio_mode(KEY_RIGHT_PIN,self.INPUT,True,None)
-        self.GPIO_KEY_PRESS_PIN  = self.gpio_mode(KEY_PRESS_PIN,self.INPUT,True,None)
+        # Initialize GPIO manager
+        self.gpio_manager = gpio_manager
 
-        self.GPIO_KEY1_PIN       = self.gpio_mode(KEY1_PIN,self.INPUT,True,None)
-        self.GPIO_KEY2_PIN       = self.gpio_mode(KEY2_PIN,self.INPUT,True,None)
-        self.GPIO_KEY3_PIN       = self.gpio_mode(KEY3_PIN,self.INPUT,True,None)
+        # Initialize GPIO outputs
+        self.gpio_manager.claim_output(rst, 0)
+        self.gpio_manager.claim_output(dc, 0)
+        self.gpio_manager.claim_output(bl, 0)
 
-
-        #Initialize SPI
+        # Initialize SPI
         self.SPI = spi
-        if self.SPI!=None :
+        if self.SPI is not None:
             self.SPI.max_speed_hz = spi_freq
             self.SPI.mode = 0b00
 
-    def gpio_mode(self,Pin,Mode,pull_up = None,active_state = True):
-        if Mode:
-            return DigitalOutputDevice(Pin,active_high = True,initial_value =False)
-        else:
-            return DigitalInputDevice(Pin,pull_up=pull_up,active_state=active_state)
-
     def digital_write(self, Pin, value):
-        if value:
-            Pin.on()
-        else:
-            Pin.off()
+        self.gpio_manager.write(Pin, value)
 
     def digital_read(self, Pin):
-        return Pin.value
+        return self.gpio_manager.read(Pin)
 
     def delay_ms(self, delaytime):
         time.sleep(delaytime / 1000.0)
 
-    def gpio_pwm(self,Pin):
-        return PWMOutputDevice(Pin,frequency = self.BL_freq)
-
     def spi_writebyte(self, data):
-        if self.SPI!=None :
+        if self.SPI is not None:
             self.SPI.writebytes(data)
 
     def bl_DutyCycle(self, duty):
-        self.GPIO_BL_PIN.value = duty / 100
+        self.gpio_manager.write(self.GPIO_BL_PIN, int(duty / 100))  # Ensure level is an integer
         
-    def bl_Frequency(self,freq):# Hz
-        self.GPIO_BL_PIN.frequency = freq
+    def bl_Frequency(self, freq):  # Hz
+        self.BL_freq = freq
            
     def module_init(self):
-        if self.SPI!=None :
+        if self.SPI is not None:
             self.SPI.max_speed_hz = self.SPEED        
             self.SPI.mode = 0b00     
         return 0
 
     def module_exit(self):
         logging.debug("spi end")
-        if self.SPI!=None :
+        if self.SPI is not None:
             self.SPI.close()
         
         logging.debug("gpio cleanup...")
-        self.digital_write(self.GPIO_RST_PIN, 1)
-        self.digital_write(self.GPIO_DC_PIN, 0)   
-        self.GPIO_BL_PIN.close()
+        self.gpio_manager.write(self.GPIO_RST_PIN, 1)
+        self.gpio_manager.write(self.GPIO_DC_PIN, 0)
+        self.gpio_manager.close()
         time.sleep(0.001)
 
 ### END OF FILE ###

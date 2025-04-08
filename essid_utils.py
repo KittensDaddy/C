@@ -1,5 +1,5 @@
 import time
-import RPi.GPIO as GPIO
+from gpio_manager import GPIOManager
 from setting import (KEY_PRESS_PIN, KEY1_PIN, OPTIONS_PER_PAGE, 
                     stealth_mode_active, debounce)
 from display import (display_message, exit_stealth_mode, draw, disp, font, 
@@ -9,6 +9,9 @@ ESSIDS = []  # List to store scanned ESSIDs
 excluded_essid = []  # List to store excluded ESSIDs
 selected_essid = None  # Variable to store selected ESSID
 selected_bssid = None
+
+# Initialize GPIO manager
+gpio_manager = GPIOManager()
 
 def essid_selection_menu_for_exclusion():
     global ESSIDS, excluded_essid
@@ -42,7 +45,7 @@ def essid_selection_menu_for_exclusion():
 
         active_idx = handle_scroll(active_idx, total_essids)
 
-        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+        if gpio_manager.read(KEY_PRESS_PIN) == 0:
             essid, bssid = ESSIDS[active_idx]  # Store both selected values
             if essid in excluded_essid:
                 excluded_essid.remove(essid)
@@ -50,7 +53,7 @@ def essid_selection_menu_for_exclusion():
                 excluded_essid.append(essid)
             time.sleep(0.1)
 
-        elif GPIO.input(KEY1_PIN) == GPIO.LOW:  # Exit on KEY1 press
+        elif gpio_manager.read(KEY1_PIN) == 0:  # Exit on KEY1 press
             debounce()
             break
         time.sleep(0.1)
