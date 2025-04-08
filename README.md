@@ -22,7 +22,7 @@ ToDO
 - migrate from RPi.GPIO to LGPIO to use bookworm
 - 
 ----
-use bullseye pi os lite 64bit
+use bookworm but sudo apt install python3-rpi.gpio
 ----
 - use crontab with tmux crontab -e >> /usr/bin/tmux new-seesion -d -s 6 '/usr/bin/python3 /path/to/pyhton.py'
 ----
