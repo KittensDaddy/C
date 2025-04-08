@@ -7,7 +7,7 @@ ToDO
 - battery life test
 - performance and stability test
 - temperature test
-- better ui
+- ~~better ui~~
 - ~~stealth mode~~
 - screensaver
 - ~~no wlan0 default~~
@@ -19,7 +19,9 @@ ToDO
 - ~~add progress tracking when attack~~
 - ~~reduce boot time~~
 - ~~additional menu for selected wifi attack mode~~
-- migrate from RPi.GPIO to LGPIO to use bookworm
+- ~~migrate from RPi.GPIO to LGPIO to use bookworm~~ no need for now
+- highlight cracked or handshake capture ssid when scan for attack of exclude
+- progress bar update for all attack
 - 
 ----
 use bullseye pi os lite 64bit
