@@ -38,14 +38,11 @@ def menu_loop():
                 disp.LCD_Clear()
                 break
             elif selected_option["name"] == "Scan WIFI":  # New option to start scanning
-                scan_wifi_networks()
-                display_message("please select wifi")
-                time.sleep(0.3)
-                essid_selection_menu()  # After scanning, enter ESSID selection
+                include_essid()
             elif selected_option["name"] == "Refresh Interfaces":  # New option to refresh interfaces
                 refresh_interfaces()
             elif selected_option["name"] == "Scan and Exclude ESSIDs":  # New option to scan and exclude ESSIDs
-                scan_and_toggle_essids()
+                exclude_essid()
             else:
                 # Toggle option
                 toggle_option(active_idx)
@@ -232,6 +229,7 @@ def essid_selection_menu():
 
     if not ESSIDS:
         display_message("No Wi-Fi networks to display")
+        time.sleep(3)
         return
     
     active_idx = 0
@@ -263,15 +261,21 @@ def essid_selection_menu():
             time.sleep(0.3)
             return  # Exit the menu after selection
 
-def scan_and_toggle_essids():
-    global ESSIDS
-    ESSIDS.clear()  # Clear previous scan results
+def exclude_essid():
+    global ESSIDS # Clear previous scan results
 
     # Scan for Wi-Fi networks
     scan_wifi_networks()
 
     # Display the ESSID selection menu for toggling exclusion
     essid_selection_menu_for_exclusion()
+
+def include_essid():
+    global ESSIDS# Clear previous scan results
+    # Scan for Wi-Fi networks
+    scan_wifi_networks()
+    # Display the ESSID selection menu for inclusion
+    essid_selection_menu()
 
 def essid_selection_menu_for_exclusion():
     global ESSIDS, excluded_essid
@@ -316,8 +320,8 @@ def essid_selection_menu_for_exclusion():
         elif GPIO.input(KEY1_PIN) == GPIO.LOW:  # Exit on KEY1 press
             debounce()
             break
-
-def scan_wifi_networks():
+"""
+#/def scan_wifi_networks():
     global ESSIDS, current_index
     ESSIDS.clear()
 
@@ -332,8 +336,7 @@ def scan_wifi_networks():
     # Get currently connected ESSID safely
     connected_essid = None
     try:
-        connected_result = subprocess.run(["/usr/sbin/iwconfig", selected_interface_name], 
-                                     capture_output=True, text=True)
+        connected_result = subprocess.run(["/usr/sbin/iwconfig", selected_interface_name], capture_output=True, text=True)
         for line in connected_result.stdout.splitlines():
             if "ESSID:" in line:
                 try:
@@ -351,7 +354,7 @@ def scan_wifi_networks():
     finished = False
     while not finished:
         start_time = time.time()
-        while time.time() - start_time < scan_duration and rescan_attempts < max_rescans:
+        while time.time() - start_time < 5 and rescan_attempts < max_rescans:
             check_monitor_mode_and_disable(selected_interface_name)
             result = subprocess.run(["/usr/sbin/iwlist", selected_interface_name, "scan"], capture_output=True, text=True)
             
@@ -400,6 +403,46 @@ def scan_wifi_networks():
     elif len(ESSIDS) <= 1 and rescan_attempts >= max_rescans:
         display_message("Limited scan results after multiple attempts")
     
+    print("Wi-Fi scan completed.")
+"""
+def scan_wifi_networks():
+    global ESSIDS, current_index
+    ESSIDS.clear()  # Clear previous scan results
+
+# Get the scan duration from the "Scan Time" option
+    scan_time_option = next(option for option in options if option["name"] == "Scan Time")
+    scan_duration = int(scan_time_option["state"])
+
+    display_message(f"Scanning for {scan_duration} seconds...")
+    selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
+    display_message_with_wrap(f"{selected_interface}, {selected_interface_name}")
+
+    start_time = time.time()
+    
+    while time.time() - start_time < scan_duration:
+        check_monitor_mode_and_disable(selected_interface_name)
+        result = subprocess.run(["/usr/sbin/iwlist", selected_interface_name, "scan"], capture_output=True, text=True)
+
+        # Parse the output for ESSID and BSSID
+        lines = result.stdout.splitlines()
+        current_bssid = None  # Variable to hold the current BSSID
+        for line in lines:
+            if "Address:" in line:  # Detecting BSSID
+                current_bssid = line.split("Address:")[1].strip()  # Capture the BSSID
+            elif "ESSID" in line:  # Detecting ESSID
+                essid = line.split(":")[1].strip().strip('"')
+                if essid and current_bssid:  # Ensure both essid and bssid are present
+                    # Store as a tuple (ESSID, BSSID)
+                    if (essid, current_bssid) not in ESSIDS:  # Avoid duplicates
+                        ESSIDS.append((essid, current_bssid))
+                        while stealth_mode_active:
+                            exit_stealth_mode()
+                            time.sleep(0.1)  # Short delay to avoid rapid looping
+                        display_message_with_wrap(f"{essid}", append=True)
+                        print(f"{essid}, {current_bssid}")
+
+        time.sleep(0.2)  # Add a slight delay between scans to avoid overloading the system
+
     print("Wi-Fi scan completed.")
 
 # Non-blocking I/O helper to read subprocess output

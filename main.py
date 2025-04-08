@@ -4,7 +4,7 @@ import time
 import RPi.GPIO as GPIO
 import threading
 from setting import (KEY_UP_PIN, KEY_DOWN_PIN, KEY_PRESS_PIN, KEY1_PIN, 
-                    KEY2_PIN, KEY3_PIN)
+                    KEY2_PIN, KEY3_PIN, KEY_LEFT_PIN, KEY_RIGHT_PIN)
 from display import splash_screen
 from menu_utils import landing_menu, monitor_buttons
 from essid_utils import ESSIDS, excluded_essid, selected_essid, selected_bssid
@@ -19,6 +19,8 @@ if __name__ == "__main__":
     GPIO.setup(KEY1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(KEY2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     GPIO.setup(KEY3_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY_LEFT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY_RIGHT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
     # Show splash screen
     splash_screen()

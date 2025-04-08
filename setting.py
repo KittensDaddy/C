@@ -1,6 +1,7 @@
 import time
 from INA219 import INA219
 from PIL import ImageFont, Image, ImageDraw
+import LCD_1in44
 
 # Constants
 OPTIONS_PER_PAGE = 11
@@ -22,6 +23,10 @@ stealth_mode_active = False
 
 # Initialize INA219 sensor
 ina219 = INA219(addr=0x43)
+
+# Initialize LCD dimensions
+width = LCD_1in44.LCD_WIDTH
+height = LCD_1in44.LCD_HEIGHT
 
 # Default values for image and drawing
 image = None
