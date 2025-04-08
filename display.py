@@ -2,10 +2,10 @@ from INA219 import INA219
 from PIL import ImageSequence, ImageFont, ImageDraw, Image
 import LCD_1in44
 import config
+import RPi.GPIO as GPIO
 import time
 import re
 from setting import debounce, options, OPTIONS_PER_PAGE, color_themes, KEY_UP_PIN, KEY_DOWN_PIN, KEY_LEFT_PIN, KEY_RIGHT_PIN, KEY_PRESS_PIN, KEY1_PIN, KEY2_PIN, KEY3_PIN, DEBOUNCE_TIME, stealth_mode_active, ina219
-from gpio_manager import GPIOManager
 
 # Set default theme
 current_theme = color_themes[0]
@@ -18,17 +18,14 @@ image = Image.new('RGB', (width, height), color=(0, 0, 0))
 draw = ImageDraw.Draw(image)
 font = ImageFont.load_default()
 
-# Initialize GPIO manager
-gpio_manager = GPIOManager()
-
 def is_stealth_mode_active():
     return stealth_mode_active
 
 def handle_scroll(active_idx, total_items):
-    if gpio_manager.read(KEY_UP_PIN) == 1:
+    if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
         active_idx = (active_idx - 1) % total_items  # Scroll up
         debounce()
-    elif gpio_manager.read(KEY_DOWN_PIN) == 1:
+    elif GPIO.input(KEY_DOWN_PIN) == GPIO.LOW:
         active_idx = (active_idx + 1) % total_items  # Scroll down
         debounce()
     return active_idx
@@ -143,7 +140,7 @@ def display_file_on_lcd(filename):
         draw_battery_bar()  # Ensure battery bar is drawn
         disp.LCD_ShowImage(image, 0, 0)
 
-        if gpio_manager.read(KEY_UP_PIN) == 1:
+        if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
             if hold_start_time is None:
                 hold_start_time = time.time()
             elif time.time() - hold_start_time > scroll_hold_time:
@@ -152,7 +149,7 @@ def display_file_on_lcd(filename):
                 start_idx -= 1
             time.sleep(scroll_speed)  # Debounce
 
-        elif gpio_manager.read(KEY_DOWN_PIN) == 1:
+        elif GPIO.input(KEY_DOWN_PIN) == GPIO.LOW:
             if hold_start_time is None:
                 hold_start_time = time.time()
             elif time.time() - hold_start_time > scroll_hold_time:
@@ -165,7 +162,7 @@ def display_file_on_lcd(filename):
             hold_start_time = None
             scroll_speed = 0.1  # Reset scroll speed when button is released
 
-        if gpio_manager.read(KEY_PRESS_PIN) == 1:  # Exit on any key press
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:  # Exit on any key press
             break
 
     disp.LCD_Clear()  # Clear the display before returning to the menu
@@ -260,12 +257,17 @@ def draw_menu(active_idx):
 # Display feedback on the screen
 def exit_stealth_mode():
     global stealth_mode_active
-    if gpio_manager.read(KEY3_PIN) == 1:
+    if GPIO.input(KEY3_PIN) == GPIO.LOW:
         disp.LCD_Clear()
         stealth_mode_active = False
 
 def stealth():
     global stealth_mode_active
+
+    # Ensure GPIO setup
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(KEY_LEFT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(KEY_RIGHT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
     # Simple game variables
     ball_pos = [width // 2, height // 2]
@@ -304,9 +306,9 @@ def stealth():
         draw.rectangle((paddle_pos[0], paddle_pos[1], paddle_pos[0] + paddle_width, paddle_pos[1] + paddle_height), fill=current_theme["text"])
 
         # Move the paddle
-        if gpio_manager.read(KEY_LEFT_PIN) == 1 and paddle_pos[0] > 0:
+        if GPIO.input(KEY_LEFT_PIN) == GPIO.LOW and paddle_pos[0] > 0:
             paddle_pos[0] -= paddle_speed
-        if gpio_manager.read(KEY_RIGHT_PIN) == 1 and paddle_pos[0] < width - paddle_width:
+        if GPIO.input(KEY_RIGHT_PIN) == GPIO.LOW and paddle_pos[0] < width - paddle_width:
             paddle_pos[0] += paddle_speed
 
         # Draw the battery bar
@@ -330,7 +332,7 @@ def splash_screen():
 
     start_time = time.time()
     while time.time() - start_time < 6:
-        if any(gpio_manager.read(pin) == 1 for pin in [KEY_UP_PIN, KEY_DOWN_PIN, KEY_PRESS_PIN, KEY1_PIN, KEY2_PIN, KEY3_PIN]):
+        if GPIO.input(KEY_UP_PIN) == GPIO.LOW or GPIO.input(KEY_DOWN_PIN) == GPIO.LOW or GPIO.input(KEY_PRESS_PIN) == GPIO.LOW or GPIO.input(KEY1_PIN) == GPIO.LOW or GPIO.input(KEY2_PIN) == GPIO.LOW or GPIO.input(KEY3_PIN) == GPIO.LOW:
             break
 
         draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])

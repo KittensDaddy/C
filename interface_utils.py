@@ -1,6 +1,5 @@
 import subprocess
 import time
-import RPi.GPIO as GPIO
 from setting import KEY2_PIN, stealth_mode_active, options
 from display import display_message, draw_menu
 selected_interface = None

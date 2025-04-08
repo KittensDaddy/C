@@ -1,4 +1,4 @@
-from gpio_manager import GPIOManager
+import RPi.GPIO as GPIO
 from setting import (KEY_UP_PIN, KEY_DOWN_PIN, KEY_PRESS_PIN, KEY1_PIN, KEY2_PIN, 
                     KEY_LEFT_PIN, DEBOUNCE_TIME, stealth_mode_active, color_themes,
                     debounce, apply_theme, OPTIONS_PER_PAGE, options)
@@ -15,9 +15,8 @@ from command_utils import build_and_run_command
 
 current_index = 0
 
-# Initialize GPIO manager
-gpio_manager = GPIOManager()
 
+ #Update the menu loop to include scanning and selecting ESSIDs
 def menu_loop():
     debounce()
     active_idx = 0
@@ -28,9 +27,7 @@ def menu_loop():
 
         active_idx = handle_scroll(active_idx, total_options)
 
-        if gpio_manager.read(KEY_PRESS_PIN) == 1:
-            print(gpio_manager.read(KEY_PRESS_PIN))  # Debugging
-            print("KEY_PRESS_PIN detected")  # Debugging
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
             selected_option = options[active_idx]  # Correctly define selected_option
             if selected_option.get("run_on_press"):
                 display_message("Showing: cracked.json")
@@ -54,21 +51,15 @@ def menu_loop():
                 toggle_option(active_idx)
             debounce()
 
-        elif gpio_manager.read(KEY1_PIN) == 1:
-            print(gpio_manager.read(KEY1_PIN))
-            print("KEY1_PIN detected")  # Debugging
+        elif GPIO.input(KEY1_PIN) == GPIO.LOW:
             build_and_run_command()
             debounce()
 
-        elif gpio_manager.read(KEY2_PIN) == 1:  # New condition to display cat drawing
-            print(gpio_manager.read(KEY2_PIN))
-            print("KEY2_PIN detected")  # Debugging
+        elif GPIO.input(KEY2_PIN) == GPIO.LOW:  # New condition to display cat drawing
             stealth()
             debounce()
 
-        elif gpio_manager.read(KEY_LEFT_PIN) == 1:  # Go back to landing menu
-            print(gpio_manager.read(KEY_LEFT_PIN))
-            print("KEY_LEFT_PIN detected")  # Debugging
+        elif GPIO.input(KEY_LEFT_PIN) == GPIO.LOW:  # Go back to landing menu
             landing_menu()
             debounce()
 
@@ -120,8 +111,7 @@ def landing_menu():
 
         active_idx = handle_scroll(active_idx, total_options)
 
-        if gpio_manager.read(KEY_PRESS_PIN) == 1:
-            print(gpio_manager.read(KEY_PRESS_PIN))  # Debugging
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
             options[active_idx]["action"]()
             if options[active_idx]["name"].startswith(str(selected_interface)):
                 # Update the displayed interface name after toggling
@@ -163,14 +153,13 @@ def setting_menu():
 
         active_idx = handle_scroll(active_idx, total_themes)
 
-        if gpio_manager.read(KEY_PRESS_PIN) == 1:
-            print(gpio_manager.read(KEY_PRESS_PIN))
-            print("KEY_PRESS_PIN detected")
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
             apply_theme(color_themes[active_idx])
+            #display_message(f"Theme set to: {color_themes[active_idx]['name']}")
             debounce()
             break
 
-        elif gpio_manager.read(KEY1_PIN) == 1 or gpio_manager.read(KEY_LEFT_PIN) == 1:  # Exit on KEY1 or KEY_LEFT press
+        elif GPIO.input(KEY1_PIN) == GPIO.LOW or GPIO.input(KEY_LEFT_PIN) == GPIO.LOW:  # Exit on KEY1 or KEY_LEFT press
             break
 
 # Handle option toggling and updating command
@@ -224,8 +213,12 @@ def toggle_option_by_name(option_name):
 def monitor_buttons():
     global stealth_mode_active
     while True:
-        if gpio_manager.read(KEY2_PIN) == 1:
-            print(gpio_manager.read(KEY2_PIN))
+        #if GPIO.input(KEY3_PIN) == GPIO.LOW:
+        #    print("Restart button pressed. Restarting script...")
+        #    time.sleep(0.5)  # Debounce
+        #    os.execv(sys.executable, ['python3'] + sys.argv)  # Restart the script
+
+        if GPIO.input(KEY2_PIN) == GPIO.LOW:
             print("Stealth mode activated.")
             time.sleep(0.5)  # Debounce
             stealth_mode_active = True
@@ -264,7 +257,7 @@ def essid_selection_menu():
 
         active_idx = handle_scroll(active_idx, total_essids)
 
-        if gpio_manager.read(KEY_PRESS_PIN) == 1:
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
             selected_essid, selected_bssid = ESSIDS[active_idx]  # Store both selected values
             display_message(f"Selected: {selected_essid}, BSSID: {selected_bssid}")
             time.sleep(0.3)
@@ -312,7 +305,7 @@ def essid_selection_menu_for_exclusion():
 
         active_idx = handle_scroll(active_idx, total_essids)  # handle_scroll already includes debounce
 
-        if gpio_manager.read(KEY_PRESS_PIN) == 1:
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
             essid, bssid = ESSIDS[active_idx]
             if essid in excluded_essid:
                 excluded_essid.remove(essid)
@@ -320,7 +313,7 @@ def essid_selection_menu_for_exclusion():
                 excluded_essid.append(essid)
             debounce()  # Only debounce once after button press
 
-        elif gpio_manager.read(KEY1_PIN) == 1:  # Exit on KEY1 press
+        elif GPIO.input(KEY1_PIN) == GPIO.LOW:  # Exit on KEY1 press
             debounce()
             break
 
