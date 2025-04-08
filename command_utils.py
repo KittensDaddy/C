@@ -6,8 +6,8 @@ from display import display_message, display_message_with_wrap, disp, draw, widt
 from essid_utils import selected_essid, selected_bssid, excluded_essid
 from interface_utils import check_monitor_mode_and_enable, selected_interface
 
-def build_and_run_command(option_name=None):
-    global selected_interface, excluded_essid
+def build_and_run_command(toggle_states=None, option_name=None, additional_args=None):
+    global selected_interface, excluded_essid, selected_essid
 
     if selected_interface is None:
         display_message("No interface selected!")
@@ -25,6 +25,12 @@ def build_and_run_command(option_name=None):
 
     command = ["sudo", "/usr/sbin/wifite", "-mac", "-i", str(selected_interface_name)]
 
+    if selected_essid:
+        command.append(f'-bssid "{selected_bssid}"')
+    elif excluded_essid:
+        for essid in excluded_essid:
+            command.append(f'-E{essid}')
+            
     if option_name:
         # Handle specific options
         if option_name == "PIXIE QUICK 30":
@@ -32,25 +38,24 @@ def build_and_run_command(option_name=None):
         elif option_name == "DEAUTH QUICK 120":
             command.extend(["--no-pmkid", "--no-wps", "-wpat", "120"])
     else:
-        # Add general options
-        for option in options:
-            if option.get("state") and option.get("command"):
-                command.extend(option["command"].split())
+        # Add toggle states from specific_attack_menu
+        if toggle_states:
+            if not toggle_states.get("pmkid", True):
+                command.append("--no-pmkid")
+            if toggle_states.get("pixie") and not toggle_states.get("deauth"):
+                command.extend(["--wps-only", "--pixie", "--bssid", toggle_states["bssid"]])  # Use a list
+            elif toggle_states.get("deauth") and not toggle_states.get("pixie"):
+                command.extend(["--no-wps", "--bssid", toggle_states["bssid"]])  # Use a list
+            elif toggle_states.get("pixie") and toggle_states.get("deauth"):
+                command.extend(["--pixie", "--bssid", toggle_states["bssid"]])  # Use a list
 
-    if selected_essid:
-        command.append(f'-bssid "{selected_bssid}"')
-
-    # Ensure excluded_essid is a list
-    if not isinstance(excluded_essid, list):
-        excluded_essid = []
-
-    # Add excluded ESSIDs
-    for essid in excluded_essid:
-        command.append(f'-E{essid}')
+    # Add additional arguments
+    if additional_args:
+        command.extend(additional_args.split())
 
     # Add scan time if specified
     scan_time_option = next((option for option in options if option["name"] == "Scan Time"), None)
-    if scan_time_option and scan_time_option["state"]:
+    if scan_time_option and scan_time_option["state"] and not toggle_states:
         command.append(f'-p {scan_time_option["state"]}')
 
     command_str = ' '.join(command)
@@ -58,7 +63,7 @@ def build_and_run_command(option_name=None):
     display_message_with_wrap(f"Running: {command_str}")
     time.sleep(1)
     draw.rectangle((0, 0, width, height), outline=0, fill=0)
-
+    print("Running command:", command, command_str)
     try:
         # Execute the command
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

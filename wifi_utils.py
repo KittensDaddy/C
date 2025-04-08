@@ -60,7 +60,7 @@ def check_monitor_mode_and_disable(interface):
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         time.sleep(5)
-
+"""
 #Function scan for wifi
 def scan_wifi_networks():
     global ESSIDS, current_index
@@ -101,7 +101,7 @@ def scan_wifi_networks():
         time.sleep(0.2)  # Add a slight delay between scans to avoid overloading the system
 
     print("Wi-Fi scan completed.")
-            
+"""
 def build_and_run_command():
     global selected_interface, excluded_essid  # Ensure excluded_essid is referenced correctly
 
