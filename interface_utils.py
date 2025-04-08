@@ -99,9 +99,12 @@ def check_monitor_mode_and_disable(interface):
         for line in result.stdout.splitlines():
             if "Mode:Monitor" in line:
                 monitor_mode_found = True
-                subprocess.run(["sudo", "ip", "link", "set", interface_name, "down"], check=True)
+                subprocess.run(["sudo", "ifconfig", interface_name, "down"], check=True)
+                display_message("Disabling monitor mode...")
                 subprocess.run(["sudo", "iwconfig", interface_name, "mode", "managed"], check=True)
-                subprocess.run(["sudo", "ip", "link", "set", interface_name, "up"], check=True)
+                display_message("Monitor mode disabled.")
+                subprocess.run(["sudo", "ifconfig", interface_name, "up"], check=True)
+                display_message("Interface enabled.")
 
     except subprocess.CalledProcessError as e:
         print(f"Error during operation: {e}")

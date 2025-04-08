@@ -16,7 +16,60 @@ from command_utils import build_and_run_command
 current_index = 0
 
 
- #Update the menu loop to include scanning and selecting ESSIDs
+def specific_attack_menu(run_command_callback):
+    debounce()
+    options = [
+        {"name": "Pixie", "state": False},
+        {"name": "Deauth", "state": False},
+        {"name": "PMKID", "state": False},
+        {"name": "GO"}
+    ]
+    active_idx = 0
+    total_options = len(options)
+
+    while True:
+        draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
+        start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
+        end_idx = min(total_options, start_idx + OPTIONS_PER_PAGE)
+
+        # Display selected ESSID at the top
+        draw_shadowed_text(draw, f"Selected ESSID: {selected_essid}", (6, 0), font, current_theme["highlight"], current_theme["shadow"])
+
+        for i in range(start_idx, end_idx):
+            option = options[i]
+            state = "ON" if option.get("state", False) else "OFF"
+            if i == active_idx:
+                draw_shadowed_text(draw, f"> {option['name']}: {state}", (6, (i - start_idx + 1) * 10), font, current_theme["highlight"], current_theme["shadow"])
+            else:
+                draw_shadowed_text(draw, f"  {option['name']}: {state}", (6, (i - start_idx + 1) * 10), font, current_theme["text"], current_theme["shadow"])
+
+        draw_battery_bar()
+        disp.LCD_ShowImage(image, 0, 0)
+
+        active_idx = handle_scroll(active_idx, total_options)
+
+        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+            if options[active_idx]["name"] == "GO":
+                # Collect toggle states
+                toggle_states = {
+                    "pixie": options[0]["state"],
+                    "deauth": options[1]["state"],
+                    "pmkid": options[2]["state"],
+                    "bssid": f"{selected_bssid}"  # Include selected BSSID as part of the toggle states
+                }
+                # Pass toggle states to the callback
+                run_command_callback(toggle_states)
+                debounce()
+                break  # Exit the menu after running the command
+            else:
+                # Toggle the state for other options
+                options[active_idx]["state"] = not options[active_idx]["state"]
+                debounce()
+
+        elif GPIO.input(KEY1_PIN) == GPIO.LOW or GPIO.input(KEY_LEFT_PIN) == GPIO.LOW:  # Exit on KEY1 or KEY_LEFT press
+            break
+
+
 def menu_loop():
     debounce()
     active_idx = 0
@@ -259,7 +312,8 @@ def essid_selection_menu():
             selected_essid, selected_bssid = ESSIDS[active_idx]  # Store both selected values
             display_message(f"Selected: {selected_essid}, BSSID: {selected_bssid}")
             time.sleep(0.3)
-            return  # Exit the menu after selection
+            specific_attack_menu(build_and_run_command)  # Call specific attack menu
+            return
 
 def exclude_essid():
     global ESSIDS # Clear previous scan results
@@ -329,7 +383,7 @@ def scan_wifi_networks():
     selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
     display_message_with_wrap(f"{selected_interface_name}")
 
-    max_attempts = 3  # Maximum number of scan attempts
+    max_attempts = 1  # Maximum number of scan attempts
     scan_attempts = 0
     check_monitor_mode_and_disable(selected_interface_name)
 
