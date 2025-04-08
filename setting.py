@@ -48,9 +48,6 @@ def apply_theme(theme):
     """
     global current_theme, image, draw, font, width, height
     current_theme = theme
-    image = Image.new('RGB', (width, height), color=current_theme["background"])
-    draw = ImageDraw.Draw(image)
-    font = ImageFont.load_default()
 
 # Color themes
 color_themes = [
