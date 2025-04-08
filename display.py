@@ -18,6 +18,8 @@ image = Image.new('RGB', (width, height), color=(0, 0, 0))
 draw = ImageDraw.Draw(image)
 font = ImageFont.load_default()
 
+last_progress = -1  # Global variable to track the last progress value
+
 def is_stealth_mode_active():
     return stealth_mode_active
 
@@ -51,6 +53,43 @@ def draw_battery_bar():
     bar_width = int((width - 20) * (p / 100))
     draw.rectangle((10, height - 10, 10 + bar_width, height - 5), fill=color)
     draw.rectangle((10, height - 10, width - 10, height - 5), outline=current_theme["text"])
+
+def draw_progress_bar(progress):
+    """
+    Draws a progress bar above the battery bar.
+
+    Args:
+        progress (float): Progress value between 0.0 and 1.0.
+    """
+    progress = max(0.0, min(1.0, progress))  # Clamp progress between 0.0 and 1.0
+
+    # Determine progress bar color
+    if progress >= 0.6:
+        color = (0, 255, 0)  # Green
+    elif progress >= 0.3:
+        color = (255, 255, 0)  # Yellow
+    else:
+        color = (255, 0, 0)  # Red
+
+    # Draw progress bar
+    bar_width = int((width - 20) * progress)
+    draw.rectangle((10, height - 20, 10 + bar_width, height - 15), fill=color)
+    draw.rectangle((10, height - 20, width - 10, height - 15), outline=current_theme["text"])
+
+def update_progress_bar(progress):
+    """
+    Updates the progress bar only if the progress value has changed.
+
+    Args:
+        progress (float): Progress value between 0.0 and 1.0.
+    """
+    global last_progress
+    progress = max(0.0, min(1.0, progress))  # Clamp progress between 0.0 and 1.0
+
+    if progress != last_progress:  # Update only if progress has changed
+        last_progress = progress
+        draw_progress_bar(progress)
+        disp.LCD_ShowImage(image, 0, 0)  # Refresh the display
 
 def display_message(message):
     while stealth_mode_active:

@@ -2,7 +2,7 @@ import RPi.GPIO as GPIO
 from setting import (KEY_UP_PIN, KEY_DOWN_PIN, KEY_PRESS_PIN, KEY1_PIN, KEY2_PIN, 
                     KEY_LEFT_PIN, DEBOUNCE_TIME, stealth_mode_active, color_themes,
                     debounce, apply_theme, OPTIONS_PER_PAGE, options)
-from display import (handle_scroll, display_message, display_file_on_lcd, draw_menu, 
+from display import (handle_scroll, display_message, display_file_on_lcd, draw_menu, update_progress_bar, draw_progress_bar,
                     exit_stealth_mode, stealth, draw_shadowed_text, disp, draw, font,
                     width, height, current_theme, draw_battery_bar, display_message_with_wrap, display_top, is_stealth_mode_active, image)
 from interface_utils import selected_interface, wireless_interfaces, get_wireless_interfaces, check_monitor_mode_and_enable, check_monitor_mode_and_disable
@@ -152,7 +152,7 @@ def setting_menu():
 
         if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
             apply_theme(color_themes[active_idx])
-            #display_message(f"Theme set to: {color_themes[active_idx]['name']}")
+            display_message(f"Theme set to: {color_themes[active_idx]['name']}")
             debounce()
             break
 
@@ -320,130 +320,58 @@ def essid_selection_menu_for_exclusion():
         elif GPIO.input(KEY1_PIN) == GPIO.LOW:  # Exit on KEY1 press
             debounce()
             break
-"""
-#/def scan_wifi_networks():
-    global ESSIDS, current_index
-    ESSIDS.clear()
 
-    # Get scan duration
-    scan_time_option = next(option for option in options if option["name"] == "Scan Time")
-    scan_duration = int(scan_time_option["state"])
-
-    display_message(f"Scanning for {scan_duration} seconds...")
-    selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
-    display_message_with_wrap(f"{selected_interface}, {selected_interface_name}")
-
-    # Get currently connected ESSID safely
-    connected_essid = None
-    try:
-        connected_result = subprocess.run(["/usr/sbin/iwconfig", selected_interface_name], capture_output=True, text=True)
-        for line in connected_result.stdout.splitlines():
-            if "ESSID:" in line:
-                try:
-                    essid_parts = line.split('ESSID:"')
-                    if len(essid_parts) > 1:
-                        connected_essid = essid_parts[1].split('"')[0]
-                except (IndexError, Exception) as e:
-                    print(f"Error parsing connected ESSID: {e}")
-                break
-    except subprocess.CalledProcessError as e:
-        print(f"Error getting connected network: {e}")
-
-    rescan_attempts = 0
-    max_rescans = 3
-    finished = False
-    while not finished:
-        start_time = time.time()
-        while time.time() - start_time < 5 and rescan_attempts < max_rescans:
-            check_monitor_mode_and_disable(selected_interface_name)
-            result = subprocess.run(["/usr/sbin/iwlist", selected_interface_name, "scan"], capture_output=True, text=True)
-            
-            # Parse scan results
-            lines = result.stdout.splitlines()
-            current_bssid = None
-            scan_essids_count = 0
-
-            for line in lines:
-                if "Address:" in line:
-                    try:
-                        current_bssid = line.split("Address:")[1].strip()
-                    except IndexError:
-                        continue
-                elif "ESSID" in line:
-                    try:
-                        essid = line.split(":")[1].strip().strip('"')
-                        scan_essids_count += 1
-                        if essid and current_bssid:
-                            if (essid, current_bssid) not in ESSIDS:
-                                ESSIDS.append((essid, current_bssid))
-                                display_message_with_wrap(f"{essid}", append=True)
-                                print(f"{essid}, {current_bssid}")
-                    except IndexError:
-                        continue
-
-        if scan_essids_count == 1 and connected_essid and connected_essid in [essid for essid, _ in ESSIDS]:
-                print("Only connected network found, resetting interface...")
-                display_message("Resetting interface...")
-                ESSIDS.clear()
-                
-                try:
-                    subprocess.run(["sudo", "ip", "link", "set", selected_interface_name, "down"], check=True)
-                    time.sleep(1)
-                    subprocess.run(["sudo", "ip", "link", "set", selected_interface_name, "up"], check=True)
-                    time.sleep(2)
-                    display_message(f"Rescanning... Attempt {rescan_attempts + 1}")
-                except subprocess.CalledProcessError as e:
-                    print(f"Error resetting interface: {e}")
-                    break
-        elif scan_essids_count >=1 and time.time() - start_time >= scan_duration or rescan_attempts >= max_rescans:
-            finished = True
-
-    if not ESSIDS:
-        display_message("No networks found!")
-    elif len(ESSIDS) <= 1 and rescan_attempts >= max_rescans:
-        display_message("Limited scan results after multiple attempts")
-    
-    print("Wi-Fi scan completed.")
-"""
 def scan_wifi_networks():
+    draw_progress_bar(0.0)
     global ESSIDS, current_index
     ESSIDS.clear()  # Clear previous scan results
 
-# Get the scan duration from the "Scan Time" option
-    scan_time_option = next(option for option in options if option["name"] == "Scan Time")
-    scan_duration = int(scan_time_option["state"])
-
-    display_message(f"Scanning for {scan_duration} seconds...")
     selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
-    display_message_with_wrap(f"{selected_interface}, {selected_interface_name}")
+    display_message_with_wrap(f"{selected_interface_name}")
 
-    start_time = time.time()
-    
-    while time.time() - start_time < scan_duration:
-        check_monitor_mode_and_disable(selected_interface_name)
-        result = subprocess.run(["/usr/sbin/iwlist", selected_interface_name, "scan"], capture_output=True, text=True)
+    max_attempts = 3  # Maximum number of scan attempts
+    scan_attempts = 0
+    check_monitor_mode_and_disable(selected_interface_name)
 
-        # Parse the output for ESSID and BSSID
+    while scan_attempts < max_attempts:
+        result = subprocess.run(["sudo", "iw", "dev", selected_interface_name, "scan"], capture_output=True, text=True)
         lines = result.stdout.splitlines()
-        current_bssid = None  # Variable to hold the current BSSID
+        current_bssid = None
+        current_essid = None
+
         for line in lines:
-            if "Address:" in line:  # Detecting BSSID
-                current_bssid = line.split("Address:")[1].strip()  # Capture the BSSID
-            elif "ESSID" in line:  # Detecting ESSID
-                essid = line.split(":")[1].strip().strip('"')
-                if essid and current_bssid:  # Ensure both essid and bssid are present
-                    # Store as a tuple (ESSID, BSSID)
-                    if (essid, current_bssid) not in ESSIDS:  # Avoid duplicates
-                        ESSIDS.append((essid, current_bssid))
+            line = line.strip()
+            if line.startswith("BSS") and "(on" in line:  # Detecting BSSID
+                current_bssid = line.split()[1].strip().split("(on")[0].strip()  # Remove "(on" part
+            elif line.startswith("SSID:"):  # Detecting SSID
+                current_essid = line.split("SSID:")[1].strip()
+                if current_bssid and current_essid:  # Ensure both BSSID and SSID are present
+                    if (current_essid, current_bssid) not in ESSIDS:  # Avoid duplicates
+                        ESSIDS.append((current_essid, current_bssid))
                         while stealth_mode_active:
                             exit_stealth_mode()
                             time.sleep(0.1)  # Short delay to avoid rapid looping
-                        display_message_with_wrap(f"{essid}", append=True)
-                        print(f"{essid}, {current_bssid}")
+                        display_message_with_wrap(f"{current_essid}", append=True)
+                        print(f"Found: {current_essid}, {current_bssid}")
+                current_bssid = None  # Reset BSSID after processing
 
-        time.sleep(0.2)  # Add a slight delay between scans to avoid overloading the system
+        # Update progress based on attempts
+        update_progress_bar((scan_attempts + 1) / max_attempts)
+        time.sleep(2)  # Add a slight delay between scans to avoid overloading the system
 
-    print("Wi-Fi scan completed.")
+        # If no ESSIDs are found, reset the interface and retry
+        scan_attempts += 1
+        if not ESSIDS:
+            subprocess.run(["sudo", "ifconfig", selected_interface_name, "down"], check=True)
+            time.sleep(0.5)
+            subprocess.run(["sudo", "ifconfig", selected_interface_name, "up"], check=True)
+            time.sleep(0.5)
+
+    if not ESSIDS:
+        display_message("No networks found after multiple attempts!")
+        time.sleep(3)
+    else:
+        print("Wi-Fi scan completed.")
 
 # Non-blocking I/O helper to read subprocess output
 def read_output_nonblocking(process, output_lines):
