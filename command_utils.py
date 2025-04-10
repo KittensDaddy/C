@@ -8,8 +8,8 @@ from interface_utils import check_monitor_mode_and_enable, selected_interface
 
 def build_and_run_command(toggle_states=None, option_name=None, additional_args=None):
     while is_stealth_mode_active():
-            exit_stealth_mode()
-            time.sleep(0.1)
+        exit_stealth_mode()
+        time.sleep(0.1)
 
     global selected_interface, excluded_essid, selected_essid
 
