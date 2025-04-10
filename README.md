@@ -22,6 +22,7 @@
 - progress bar update for all attack
 - use internal_wifi driver that enable monitor mode
 - seperate each menu page into files
+- rewrite scan network to use wash -a command and mark wps for specific attack to know to use or not to use wps
 ----
 use bookworm but sudo apt install python3-rpi.gpio
 ----
