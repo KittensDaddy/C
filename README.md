@@ -11,7 +11,7 @@
 - ~~no wlan0 default~~
 - clean up code
 - properly handle each function
-- crack wpa upload auto connect cracked wifi upload via tailscale
+- ~~crack wpa upload auto connect cracked wifi upload via tailscale~~
 - ~~GIF embeded~~
 - ~~scrolling faster the longer press~~
 - ~~add progress tracking when attack~~
@@ -20,6 +20,8 @@
 - ~~migrate from RPi.GPIO to LGPIO to use bookworm~~ no need for now
 - highlight cracked or handshake capture ssid when scan for attack of exclude
 - progress bar update for all attack
+- use internal_wifi driver that enable monitor mode
+- seperate each menu page into files
 ----
 use bookworm but sudo apt install python3-rpi.gpio
 ----
