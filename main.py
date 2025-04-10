@@ -3,28 +3,38 @@ import os
 import time
 import RPi.GPIO as GPIO
 import threading
-from setting import (KEY_UP_PIN, KEY_DOWN_PIN, KEY_PRESS_PIN, KEY1_PIN, 
-                    KEY2_PIN, KEY3_PIN, KEY_LEFT_PIN, KEY_RIGHT_PIN, state)
-from display import splash_screen
-from menu_utils import landing_menu, monitor_buttons
+import setting
+from display import splash_screen, stealth
+from menu_utils import landing_menu
 from essid_utils import ESSIDS, excluded_essid, selected_essid, selected_bssid
 
 os.environ["GPG_TTY"] = "/dev/tty1"
 
+def monitor_buttons():
+    while True:
+        if GPIO.input(setting.KEY3_PIN) == GPIO.LOW:
+            setting.state["stealth_mode_active"].clear()
+            # Safely reboot the system
+            os.system("sudo reboot")
+            break  # Exit the loop to ensure no further execution
+        if GPIO.input(setting.KEY2_PIN) == GPIO.LOW:
+            setting.state["stealth_mode_active"].set()  # Use set() to activate stealth mode
+            stealth()
+        time.sleep(0.05)  # Short delay to avoid rapid looping
 
 if __name__ == "__main__":
     GPIO.setmode(GPIO.BCM)  # Use BCM numbering
-    GPIO.setup(KEY_UP_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY_DOWN_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY_PRESS_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY3_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY_LEFT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY_RIGHT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(setting.KEY_UP_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(setting.KEY_DOWN_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(setting.KEY_PRESS_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(setting.KEY1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(setting.KEY2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(setting.KEY3_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(setting.KEY_LEFT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(setting.KEY_RIGHT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
     # Ensure stealth mode is initially off
-    state["stealth_mode_active"].clear()
+    setting.state["stealth_mode_active"].clear()
 
     # Show splash screen
     splash_screen()
