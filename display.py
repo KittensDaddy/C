@@ -5,7 +5,8 @@ import config
 import RPi.GPIO as GPIO
 import time
 import re
-from setting import debounce, options, OPTIONS_PER_PAGE, color_themes, KEY_UP_PIN, KEY_DOWN_PIN, KEY_LEFT_PIN, KEY_RIGHT_PIN, KEY_PRESS_PIN, KEY1_PIN, KEY2_PIN, KEY3_PIN, DEBOUNCE_TIME, stealth_mode_active, ina219
+import random
+from setting import debounce, options, OPTIONS_PER_PAGE, color_themes, KEY_UP_PIN, KEY_DOWN_PIN, KEY_LEFT_PIN, KEY_RIGHT_PIN, KEY_PRESS_PIN, KEY1_PIN, KEY2_PIN, KEY3_PIN, DEBOUNCE_TIME, state, ina219
 
 # Set default theme
 current_theme = color_themes[0]
@@ -21,7 +22,7 @@ font = ImageFont.load_default()
 last_progress = -1  # Global variable to track the last progress value
 
 def is_stealth_mode_active():
-    return stealth_mode_active
+    return state["stealth_mode_active"].is_set()  # Use is_set() to check the Event
 
 def handle_scroll(active_idx, total_items):
     if GPIO.input(KEY_UP_PIN) == GPIO.LOW:
@@ -92,7 +93,7 @@ def update_progress_bar(progress):
         disp.LCD_ShowImage(image, 0, 0)  # Refresh the display
 
 def display_message(message):
-    while stealth_mode_active:
+    while is_stealth_mode_active():
         exit_stealth_mode()
         time.sleep(0.1)  # Short delay to avoid rapid looping
     draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
@@ -102,7 +103,7 @@ def display_message(message):
     time.sleep(0.3) 
 
 def display_top(message):
-    while stealth_mode_active:
+    while is_stealth_mode_active():
         exit_stealth_mode()
         time.sleep(0.1)  # Short delay to avoid rapid looping
     draw.rectangle((0, 0, 128, 20), outline=0, fill=current_theme["background"])
@@ -120,10 +121,10 @@ def draw_shadowed_text(draw, text, position, font, text_color, shadow_color):
 
 # Function to display specific lines from cracked.json on the LCD
 def display_file_on_lcd(filename):
-    debounce()
-    while stealth_mode_active:
+    while is_stealth_mode_active():
         exit_stealth_mode()
         time.sleep(0.1)  # Short delay to avoid rapid looping
+    debounce()
     try:
         with open(filename, 'r') as file:
             content = file.readlines()
@@ -168,9 +169,6 @@ def display_file_on_lcd(filename):
     hold_start_time = None
 
     while True:
-        while stealth_mode_active:
-            exit_stealth_mode()
-            time.sleep(0.1)  # Short delay to avoid rapid looping
         # Clear the screen and draw the lines to display
         draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
         for i in range(start_idx, min(start_idx + (height // 10), len(filtered_lines))):
@@ -207,7 +205,7 @@ def display_file_on_lcd(filename):
     disp.LCD_Clear()  # Clear the display before returning to the menu
 
 def display_message_with_wrap(message, append=False, top=False):
-    while stealth_mode_active:
+    while is_stealth_mode_active():
         exit_stealth_mode()
         time.sleep(0.1)  # Short delay to avoid rapid looping
 
@@ -261,7 +259,7 @@ def display_message_with_wrap(message, append=False, top=False):
 
 # Function to draw the current scroll window of options
 def draw_menu(active_idx):
-    while stealth_mode_active:
+    while is_stealth_mode_active():
         exit_stealth_mode()
         time.sleep(0.1)  # Short delay to avoid rapid looping
     draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])  # Clear screen
@@ -295,70 +293,101 @@ def draw_menu(active_idx):
 
 # Display feedback on the screen
 def exit_stealth_mode():
-    global stealth_mode_active
     if GPIO.input(KEY3_PIN) == GPIO.LOW:
         disp.LCD_Clear()
-        stealth_mode_active = False
+        state["stealth_mode_active"].clear()  # Use clear() to deactivate stealth mode
 
 def stealth():
-    global stealth_mode_active
+    state["stealth_mode_active"].set()  # Activate stealth mode
 
-    # Ensure GPIO setup
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(KEY_LEFT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY_RIGHT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    # Game variables
+    player_pos = [width // 2, height - 20]
+    player_speed = 5
+    bullets = []
+    enemies = []
+    score = 0
+    enemy_speed = 1
+    spawn_rate = 30  # Frames between enemy spawns
+    frame_count = 0
+    last_shoot_time = 0  # Track the last shooting time
+    shoot_interval = 0.3  # Minimum time between shots (in seconds)
 
-    # Simple game variables
-    ball_pos = [width // 2, height // 2]
-    ball_dir = [1, 1]
-    ball_speed = 2
-    paddle_width = 20
-    paddle_height = 5
-    paddle_pos = [width // 2 - paddle_width // 2, height - 20]  # Adjusted for battery bar
-    paddle_speed = 5
-
-    while stealth_mode_active:
+    while is_stealth_mode_active():
         # Clear the screen
         draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
 
-        # Move the ball
-        ball_pos[0] += ball_dir[0] * ball_speed
-        ball_pos[1] += ball_dir[1] * ball_speed
+        # Draw the player
+        draw.rectangle((player_pos[0] - 5, player_pos[1] - 5, player_pos[0] + 5, player_pos[1] + 5), fill=current_theme["text"])
 
-        # Ball collision with walls
-        if ball_pos[0] <= 0 or ball_pos[0] >= width:
-            ball_dir[0] = -ball_dir[0]
-        if ball_pos[1] <= 0:
-            ball_dir[1] = -ball_dir[1]
-        if ball_pos[1] >= height - 20:  # Adjusted for battery bar
-            ball_dir[1] = -ball_dir[1]
+        # Move bullets
+        for bullet in bullets[:]:
+            bullet[1] -= 5
+            if bullet[1] < 0:
+                bullets.remove(bullet)
+            else:
+                draw.rectangle((bullet[0] - 2, bullet[1] - 2, bullet[0] + 2, bullet[1] + 2), fill=(255, 255, 0))
 
-        # Ball collision with paddle
-        if (paddle_pos[0] <= ball_pos[0] <= paddle_pos[0] + paddle_width and
-                paddle_pos[1] <= ball_pos[1] <= paddle_pos[1] + paddle_height):
-            ball_dir[1] = -ball_dir[1]
+        # Spawn enemies
+        if frame_count % spawn_rate == 0:
+            enemies.append([random.randint(0, width - 10), 0])
 
-        # Draw the ball
-        draw.ellipse((ball_pos[0] - 2, ball_pos[1] - 2, ball_pos[0] + 2, ball_pos[1] + 2), fill=current_theme["text"])
+        # Move enemies
+        for enemy in enemies[:]:
+            enemy[1] += enemy_speed
+            if enemy[1] > height:  # Enemy crosses the line
+                enemies.remove(enemy)
+                score -= 5  # Deduct score
+            else:
+                draw.rectangle((enemy[0], enemy[1], enemy[0] + 10, enemy[1] + 10), fill=(255, 0, 0))
 
-        # Draw the paddle
-        draw.rectangle((paddle_pos[0], paddle_pos[1], paddle_pos[0] + paddle_width, paddle_pos[1] + paddle_height), fill=current_theme["text"])
+        # Check for collisions (bullets vs enemies)
+        for bullet in bullets[:]:
+            for enemy in enemies[:]:
+                if enemy[0] < bullet[0] < enemy[0] + 10 and enemy[1] < bullet[1] < enemy[1] + 10:
+                    bullets.remove(bullet)
+                    enemies.remove(enemy)
+                    score += 1
+                    break
 
-        # Move the paddle
-        if GPIO.input(KEY_LEFT_PIN) == GPIO.LOW and paddle_pos[0] > 0:
-            paddle_pos[0] -= paddle_speed
-        if GPIO.input(KEY_RIGHT_PIN) == GPIO.LOW and paddle_pos[0] < width - paddle_width:
-            paddle_pos[0] += paddle_speed
+        # Check for collisions (player vs enemies)
+        for enemy in enemies[:]:
+            if enemy[0] < player_pos[0] < enemy[0] + 10 and enemy[1] < player_pos[1] < enemy[1] + 10:
+                enemies.remove(enemy)
+                score -= 10  # Deduct score
 
-        # Draw the battery bar
+        # Draw the score
+        draw.text((5, 5), f"Score: {score}", font=font, fill=current_theme["text"])
+
+        # Handle player movement
+        if GPIO.input(KEY_LEFT_PIN) == GPIO.LOW and player_pos[0] > 5:
+            player_pos[0] -= player_speed
+        if GPIO.input(KEY_RIGHT_PIN) == GPIO.LOW and player_pos[0] < width - 5:
+            player_pos[0] += player_speed
+
+        # Automatic shooting with speed limit
+        current_time = time.time()
+        if current_time - last_shoot_time >= shoot_interval:
+            bullets.append([player_pos[0], player_pos[1] - 5])
+            last_shoot_time = current_time
+
+        # Increase difficulty over time
+        if frame_count % 600 == 0:  # Every 600 frames (~10 seconds)
+            enemy_speed += 0.5
+            spawn_rate = max(10, spawn_rate - 2)  # Decrease spawn rate (faster spawns)
+
+        # Update the display
         draw_battery_bar()
-
-        # Display the game
         disp.LCD_ShowImage(image, 0, 0)
-        time.sleep(0.05)  # Adjust the delay as needed
+        time.sleep(0.05)  # Adjust frame rate
+
+        # Increment frame count
+        frame_count += 1
 
         # Exit stealth mode
-        exit_stealth_mode()
+        if GPIO.input(KEY3_PIN) == GPIO.LOW:  # Exit on KEY3_PIN press
+            state["stealth_mode_active"].clear()
+
+    print("Stealth mode ended.")
 
 def splash_screen():
     text = "SUN"
@@ -397,7 +426,7 @@ def splash_screen():
 
 # Non-blocking I/O helper to read subprocess output
 def read_output_nonblocking(process, output_lines):
-    while stealth_mode_active:
+    while is_stealth_mode_active():
         exit_stealth_mode()
         time.sleep(0.1)  # Short delay to avoid rapid looping
     global current_essid, current_mac

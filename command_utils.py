@@ -1,12 +1,16 @@
 import subprocess
 import time
 import threading
-from setting import options, stealth_mode_active
+from setting import options, state
 from display import display_message, display_message_with_wrap, disp, draw, width, height, exit_stealth_mode, read_output_nonblocking
 from essid_utils import selected_essid, selected_bssid, excluded_essid
 from interface_utils import check_monitor_mode_and_enable, selected_interface
 
 def build_and_run_command(toggle_states=None, option_name=None, additional_args=None):
+    while is_stealth_mode_active():
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
+
     global selected_interface, excluded_essid, selected_essid
 
     if selected_interface is None:
@@ -25,9 +29,7 @@ def build_and_run_command(toggle_states=None, option_name=None, additional_args=
 
     command = ["sudo", "/usr/sbin/wifite", "-mac", "-i", str(selected_interface_name)]
 
-    if selected_essid:
-        command.append(f'-bssid "{selected_bssid}"')
-    elif excluded_essid:
+    if excluded_essid:
         for essid in excluded_essid:
             command.append(f'-E{essid}')
             
@@ -43,11 +45,11 @@ def build_and_run_command(toggle_states=None, option_name=None, additional_args=
             if not toggle_states.get("pmkid", True):
                 command.append("--no-pmkid")
             if toggle_states.get("pixie") and not toggle_states.get("deauth"):
-                command.extend(["--wps-only", "--pixie", "--bssid", toggle_states["bssid"]])  # Use a list
+                command.extend(["-ab", "--wps-only", "--pixie", "--bssid", toggle_states["bssid"]])  # Use a list
             elif toggle_states.get("deauth") and not toggle_states.get("pixie"):
-                command.extend(["--no-wps", "--bssid", toggle_states["bssid"]])  # Use a list
+                command.extend(["-ab", "--no-wps", "--bssid", toggle_states["bssid"]])  # Use a list
             elif toggle_states.get("pixie") and toggle_states.get("deauth"):
-                command.extend(["--pixie", "--bssid", toggle_states["bssid"]])  # Use a list
+                command.extend(["-ab", "--pixie", "--bssid", toggle_states["bssid"]])  # Use a list
 
     # Add additional arguments
     if additional_args:
@@ -88,3 +90,7 @@ def build_and_run_command(toggle_states=None, option_name=None, additional_args=
     except Exception as e:
         display_message(f"Error: {e}")
         time.sleep(2)
+
+    while state["stealth_mode_active"].is_set():
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping

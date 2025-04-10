@@ -1,7 +1,5 @@
 import RPi.GPIO as GPIO
-from setting import (KEY_UP_PIN, KEY_DOWN_PIN, KEY_PRESS_PIN, KEY1_PIN, KEY2_PIN, 
-                    KEY_LEFT_PIN, DEBOUNCE_TIME, stealth_mode_active, color_themes,
-                    debounce, apply_theme, OPTIONS_PER_PAGE, options)
+import setting
 from display import (handle_scroll, display_message, display_file_on_lcd, draw_menu, update_progress_bar, draw_progress_bar,
                     exit_stealth_mode, stealth, draw_shadowed_text, disp, draw, font,
                     width, height, current_theme, draw_battery_bar, display_message_with_wrap, display_top, is_stealth_mode_active, image)
@@ -12,12 +10,16 @@ import re
 import threading
 from essid_utils import ESSIDS, excluded_essid, selected_essid, selected_bssid
 from command_utils import build_and_run_command
+from setting import state
 
 current_index = 0
 
 
 def specific_attack_menu(run_command_callback):
-    debounce()
+    while is_stealth_mode_active():
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
+    setting.debounce()
     options = [
         {"name": "Pixie", "state": False},
         {"name": "Deauth", "state": False},
@@ -29,26 +31,29 @@ def specific_attack_menu(run_command_callback):
 
     while True:
         draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
-        start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
-        end_idx = min(total_options, start_idx + OPTIONS_PER_PAGE)
+        start_idx = max(0, active_idx - setting.OPTIONS_PER_PAGE + 1)
+        end_idx = min(total_options, start_idx + setting.OPTIONS_PER_PAGE)
 
         # Display selected ESSID at the top
         draw_shadowed_text(draw, f"Selected ESSID: {selected_essid}", (6, 0), font, current_theme["highlight"], current_theme["shadow"])
 
         for i in range(start_idx, end_idx):
             option = options[i]
-            state = "ON" if option.get("state", False) else "OFF"
-            if i == active_idx:
-                draw_shadowed_text(draw, f"> {option['name']}: {state}", (6, (i - start_idx + 1) * 10), font, current_theme["highlight"], current_theme["shadow"])
+            if option["name"] == "GO":
+                text = f"> {option['name']}" if i == active_idx else f"  {option['name']}"
             else:
-                draw_shadowed_text(draw, f"  {option['name']}: {state}", (6, (i - start_idx + 1) * 10), font, current_theme["text"], current_theme["shadow"])
+                state = "ON" if option.get("state", False) else "OFF"
+                text = f"> {option['name']}: {state}" if i == active_idx else f"  {option['name']}: {state}"
+            draw_shadowed_text(draw, text, (6, (i - start_idx + 1) * 10), font, 
+                               current_theme["highlight"] if i == active_idx else current_theme["text"], 
+                               current_theme["shadow"])
 
         draw_battery_bar()
         disp.LCD_ShowImage(image, 0, 0)
 
         active_idx = handle_scroll(active_idx, total_options)
 
-        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+        if GPIO.input(setting.KEY_PRESS_PIN) == GPIO.LOW:
             if options[active_idx]["name"] == "GO":
                 # Collect toggle states
                 toggle_states = {
@@ -59,32 +64,35 @@ def specific_attack_menu(run_command_callback):
                 }
                 # Pass toggle states to the callback
                 run_command_callback(toggle_states)
-                debounce()
+                setting.debounce()
                 break  # Exit the menu after running the command
             else:
                 # Toggle the state for other options
                 options[active_idx]["state"] = not options[active_idx]["state"]
-                debounce()
+                setting.debounce()
 
-        elif GPIO.input(KEY1_PIN) == GPIO.LOW or GPIO.input(KEY_LEFT_PIN) == GPIO.LOW:  # Exit on KEY1 or KEY_LEFT press
+        elif GPIO.input(setting.KEY1_PIN) == GPIO.LOW or GPIO.input(setting.KEY_LEFT_PIN) == GPIO.LOW:  # Exit on KEY1 or KEY_LEFT press
             break
 
 
 def menu_loop():
-    debounce()
+    while is_stealth_mode_active():
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
+    setting.debounce()
     active_idx = 0
-    total_options = len(options)
+    total_options = len(setting.options)
 
     while True:
         draw_menu(active_idx)
 
         active_idx = handle_scroll(active_idx, total_options)
 
-        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
-            selected_option = options[active_idx]  # Correctly define selected_option
+        if GPIO.input(setting.KEY_PRESS_PIN) == GPIO.LOW:
+            selected_option = setting.options[active_idx]  # Correctly define selected_option
             if selected_option.get("run_on_press"):
                 display_message("Showing: cracked.json")
-                display_file_on_lcd("cracked.json")
+                display_file_on_lcd("/home/sun/cracked.json")
             elif selected_option["name"] == "Quit":
                 display_message("Exiting...")
                 time.sleep(1)
@@ -99,22 +107,22 @@ def menu_loop():
             else:
                 # Toggle option
                 toggle_option(active_idx)
-            debounce()
+            setting.debounce()
 
-        elif GPIO.input(KEY1_PIN) == GPIO.LOW:
+        elif GPIO.input(setting.KEY1_PIN) == GPIO.LOW:
             build_and_run_command()
-            debounce()
+            setting.debounce()
 
-        elif GPIO.input(KEY2_PIN) == GPIO.LOW:  # New condition to display cat drawing
+        elif GPIO.input(setting.KEY2_PIN) == GPIO.LOW:  # New condition to display cat drawing
             stealth()
-            debounce()
+            setting.debounce()
 
-        elif GPIO.input(KEY_LEFT_PIN) == GPIO.LOW:  # Go back to landing menu
+        elif GPIO.input(setting.KEY_LEFT_PIN) == GPIO.LOW:  # Go back to landing menu
             landing_menu()
-            debounce()
+            setting.debounce()
 
 def landing_menu():
-    debounce()
+    setting.debounce()
     global selected_interface, wireless_interfaces
     wireless_interfaces = get_wireless_interfaces()
     if len(wireless_interfaces) > 1:
@@ -132,22 +140,22 @@ def landing_menu():
     options = [
         {"name": "Wifite", "action": menu_loop},
         {"name": "Setting", "action": setting_menu},
-        {"name": "Show Crack", "action": lambda: display_file_on_lcd("cracked.json")},
+        {"name": "Show Crack", "action": lambda: display_file_on_lcd("/home/sun/cracked.json")},
         {"name": f"{selected_interface}", "action": toggle_interface},  # Change None to toggle_interface
         {"name": "Refresh Interfaces", "action": refresh_interfaces},
-        {"name": "PIXIE QUICK 30", "action": lambda: build_and_run_command("PIXIE QUICK 30")},
-        {"name": "DEAUTH QUICK 120", "action": lambda: build_and_run_command("DEAUTH QUICK 120")}
+        {"name": "PIXIE QUICK 30", "action": lambda: build_and_run_command(option_name="PIXIE QUICK 30")},
+        {"name": "DEAUTH QUICK 120", "action": lambda: build_and_run_command(option_name="DEAUTH QUICK 120")}
     ]
     active_idx = 0
     total_options = len(options)
 
     while True:
-        while stealth_mode_active:
+        while is_stealth_mode_active():
             exit_stealth_mode()
-            time.sleep(0.1)  # Short delay to avoid rapid looping
+            time.sleep(0.1)
         draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
-        start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
-        end_idx = min(total_options, start_idx + OPTIONS_PER_PAGE)
+        start_idx = max(0, active_idx - setting.OPTIONS_PER_PAGE + 1)
+        end_idx = min(total_options, start_idx + setting.OPTIONS_PER_PAGE)
 
         for i in range(start_idx, end_idx):
             option = options[i]
@@ -161,12 +169,12 @@ def landing_menu():
 
         active_idx = handle_scroll(active_idx, total_options)
 
-        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+        if GPIO.input(setting.KEY_PRESS_PIN) == GPIO.LOW:
             options[active_idx]["action"]()
             if options[active_idx]["name"].startswith(str(selected_interface)):
                 # Update the displayed interface name after toggling
                 options[3]["name"] = str(selected_interface)
-            debounce()
+            setting.debounce()
 
 def toggle_interface():
     global selected_interface
@@ -179,20 +187,20 @@ def toggle_interface():
     print(f"Selected interface: {selected_interface}")
 
 def setting_menu():
-    debounce()
+    setting.debounce()
     active_idx = 0
-    total_themes = len(color_themes)
+    total_themes = len(setting.color_themes)
 
     while True:
-        while stealth_mode_active:
+        while is_stealth_mode_active():
             exit_stealth_mode()
             time.sleep(0.1)  # Short delay to avoid rapid looping
         draw.rectangle((0, 0, width, height), outline=0, fill=current_theme["background"])
-        start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
-        end_idx = min(total_themes, start_idx + OPTIONS_PER_PAGE)
+        start_idx = max(0, active_idx - setting.OPTIONS_PER_PAGE + 1)
+        end_idx = min(total_themes, start_idx + setting.OPTIONS_PER_PAGE)
 
         for i in range(start_idx, end_idx):
-            theme = color_themes[i]
+            theme = setting.color_themes[i]
             if i == active_idx:
                 draw_shadowed_text(draw, f"> {theme['name']}", (6, (i - start_idx) * 10), font, current_theme["highlight"], current_theme["shadow"])  # Highlight active option
             else:
@@ -203,18 +211,18 @@ def setting_menu():
 
         active_idx = handle_scroll(active_idx, total_themes)
 
-        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
-            apply_theme(color_themes[active_idx])
-            display_message(f"Theme set to: {color_themes[active_idx]['name']}")
-            debounce()
+        if GPIO.input(setting.KEY_PRESS_PIN) == GPIO.LOW:
+            setting.apply_theme(setting.color_themes[active_idx])
+            display_message(f"Theme set to: {setting.color_themes[active_idx]['name']}")
+            setting.debounce()
             break
 
-        elif GPIO.input(KEY1_PIN) == GPIO.LOW or GPIO.input(KEY_LEFT_PIN) == GPIO.LOW:  # Exit on KEY1 or KEY_LEFT press
+        elif GPIO.input(setting.KEY1_PIN) == GPIO.LOW or GPIO.input(setting.KEY_LEFT_PIN) == GPIO.LOW:  # Exit on KEY1 or KEY_LEFT press
             break
 
 # Handle option toggling and updating command
 def toggle_option(selection):
-    option = options[selection]
+    option = setting.options[selection]
 
     # Special case for "Select Interface" option
     if option['name'] == "I":
@@ -228,7 +236,7 @@ def toggle_option(selection):
         selected_interface = new_interface
 
         # Update the option name in the landing menu
-        for landing_option in options:
+        for landing_option in setting.options:
             if "Interface:" in landing_option["name"]:
                 landing_option["name"] = f"Interface: {selected_interface}"
         print(f"Selected interface: {selected_interface}")
@@ -256,28 +264,21 @@ def toggle_option(selection):
         option["state"] = not option["state"]
 
 def toggle_option_by_name(option_name):
-    option = next((opt for opt in options if opt["name"] == option_name), None)
+    option = next((opt for opt in setting.options if opt["name"] == option_name), None)
     if option:
-        toggle_option(options.index(option))
+        toggle_option(setting.options.index(option))
         
 def monitor_buttons():
-    global stealth_mode_active
     while True:
-        #if GPIO.input(KEY3_PIN) == GPIO.LOW:
-        #    print("Restart button pressed. Restarting script...")
-        #    time.sleep(0.5)  # Debounce
-        #    os.execv(sys.executable, ['python3'] + sys.argv)  # Restart the script
-
-        if GPIO.input(KEY2_PIN) == GPIO.LOW:
-            print("Stealth mode activated.")
-            time.sleep(0.5)  # Debounce
-            stealth_mode_active = True
+        if GPIO.input(setting.KEY2_PIN) == GPIO.LOW:
+            state["stealth_mode_active"].set()  # Use set() to activate stealth mode
             stealth()
-            stealth_mode_active = False
-
         time.sleep(0.05)  # Short delay to avoid rapid looping
 
 def essid_selection_menu():
+    while is_stealth_mode_active():
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
     global selected_essid, selected_bssid, ESSIDS
 
     if not ESSIDS:
@@ -289,12 +290,9 @@ def essid_selection_menu():
     total_essids = len(ESSIDS)
 
     while True:
-        while stealth_mode_active:
-            exit_stealth_mode()
-            time.sleep(0.1)  # Short delay to avoid rapid looping
         draw.rectangle((0, 0, width, height), outline=0, fill=0)
-        start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
-        end_idx = min(total_essids, start_idx + OPTIONS_PER_PAGE)
+        start_idx = max(0, active_idx - setting.OPTIONS_PER_PAGE + 1)
+        end_idx = min(total_essids, start_idx + setting.OPTIONS_PER_PAGE)
 
         for i in range(start_idx, end_idx):
             essid, bssid = ESSIDS[i]  # Unpacking to get both ESSID and BSSID
@@ -308,7 +306,7 @@ def essid_selection_menu():
 
         active_idx = handle_scroll(active_idx, total_essids)
 
-        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+        if GPIO.input(setting.KEY_PRESS_PIN) == GPIO.LOW:
             selected_essid, selected_bssid = ESSIDS[active_idx]  # Store both selected values
             display_message(f"Selected: {selected_essid}, BSSID: {selected_bssid}")
             time.sleep(0.3)
@@ -332,6 +330,9 @@ def include_essid():
     essid_selection_menu()
 
 def essid_selection_menu_for_exclusion():
+    while is_stealth_mode_active():
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
     global ESSIDS, excluded_essid
 
     if not ESSIDS:
@@ -342,12 +343,9 @@ def essid_selection_menu_for_exclusion():
     total_essids = len(ESSIDS)
 
     while True:
-        while stealth_mode_active:
-            exit_stealth_mode()
-            time.sleep(0.1)
         draw.rectangle((0, 0, width, height), outline=0, fill=0)
-        start_idx = max(0, active_idx - OPTIONS_PER_PAGE + 1)
-        end_idx = min(total_essids, start_idx + OPTIONS_PER_PAGE)
+        start_idx = max(0, active_idx - setting.OPTIONS_PER_PAGE + 1)
+        end_idx = min(total_essids, start_idx + setting.OPTIONS_PER_PAGE)
 
         for i in range(start_idx, end_idx):
             essid, bssid = ESSIDS[i]
@@ -363,16 +361,16 @@ def essid_selection_menu_for_exclusion():
 
         active_idx = handle_scroll(active_idx, total_essids)  # handle_scroll already includes debounce
 
-        if GPIO.input(KEY_PRESS_PIN) == GPIO.LOW:
+        if GPIO.input(setting.KEY_PRESS_PIN) == GPIO.LOW:
             essid, bssid = ESSIDS[active_idx]
             if essid in excluded_essid:
                 excluded_essid.remove(essid)
             else:
                 excluded_essid.append(essid)
-            debounce()  # Only debounce once after button press
+            setting.debounce()  # Only debounce once after button press
 
-        elif GPIO.input(KEY1_PIN) == GPIO.LOW:  # Exit on KEY1 press
-            debounce()
+        elif GPIO.input(setting.KEY1_PIN) == GPIO.LOW:  # Exit on KEY1 press
+            setting.debounce()
             break
 
 def scan_wifi_networks():
@@ -402,9 +400,6 @@ def scan_wifi_networks():
                 if current_bssid and current_essid:  # Ensure both BSSID and SSID are present
                     if (current_essid, current_bssid) not in ESSIDS:  # Avoid duplicates
                         ESSIDS.append((current_essid, current_bssid))
-                        while stealth_mode_active:
-                            exit_stealth_mode()
-                            time.sleep(0.1)  # Short delay to avoid rapid looping
                         display_message_with_wrap(f"{current_essid}", append=True)
                         print(f"Found: {current_essid}, {current_bssid}")
                 current_bssid = None  # Reset BSSID after processing
@@ -429,9 +424,6 @@ def scan_wifi_networks():
 
 # Non-blocking I/O helper to read subprocess output
 def read_output_nonblocking(process, output_lines):
-    while stealth_mode_active:
-        exit_stealth_mode()
-        time.sleep(0.1)  # Short delay to avoid rapid looping
     global current_essid, current_mac
 
     essid_results = {}
@@ -501,7 +493,7 @@ def refresh_interfaces():
         selected_interface = wireless_interfaces[0]
     
     # Update the "I" option with the new selected interface
-    for option in options:
+    for option in setting.options:
         if option["name"] == "I":
             option["state"] = selected_interface
     

@@ -1,4 +1,5 @@
 import time
+import threading
 from INA219 import INA219
 from PIL import ImageFont, Image, ImageDraw
 import LCD_1in44
@@ -17,9 +18,11 @@ KEY1_PIN = 21
 KEY2_PIN = 20
 KEY3_PIN = 16
 
-# Global variables
 current_index = 0
-stealth_mode_active = False
+
+state = {
+    "stealth_mode_active": threading.Event()  # Replace boolean with threading.Event
+}
 
 # Initialize INA219 sensor
 ina219 = INA219(addr=0x43)

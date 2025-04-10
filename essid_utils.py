@@ -1,7 +1,7 @@
 import time
 import RPi.GPIO as GPIO
 from setting import (KEY_PRESS_PIN, KEY1_PIN, OPTIONS_PER_PAGE, 
-                    stealth_mode_active, debounce)
+                    state, debounce)
 from display import (display_message, exit_stealth_mode, draw, disp, font, 
                     width, height, draw_battery_bar, image, handle_scroll)
 
@@ -13,6 +13,10 @@ selected_bssid = None
 def essid_selection_menu_for_exclusion():
     global ESSIDS, excluded_essid
 
+    while is_stealth_mode_active():
+        exit_stealth_mode()
+        time.sleep(0.1)  # Short delay to avoid rapid looping
+
     if not ESSIDS:
         display_message("No Wi-Fi networks to display")
         return
@@ -21,7 +25,7 @@ def essid_selection_menu_for_exclusion():
     total_essids = len(ESSIDS)
 
     while True:
-        while stealth_mode_active:
+        if state["stealth_mode_active"].is_set():  # Ensure stealth mode is respected
             exit_stealth_mode()
             time.sleep(0.1)  # Short delay to avoid rapid looping
         draw.rectangle((0, 0, width, height), outline=0, fill=0)
