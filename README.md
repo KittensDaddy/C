@@ -22,7 +22,7 @@ ToDO
 - ~~migrate from RPi.GPIO to LGPIO to use bookworm~~ no need for now
 - highlight cracked or handshake capture ssid when scan for attack of exclude
 - progress bar update for all attack
-- 
+- connection wifi error scanning
 ----
 use bullseye pi os lite 64bit
 ----
