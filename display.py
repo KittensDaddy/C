@@ -1,4 +1,3 @@
-from INA219 import INA219
 from PIL import ImageSequence, ImageFont, ImageDraw, Image
 import LCD_1in44
 import config

@@ -101,7 +101,7 @@ current_theme = color_themes[0]
 def _init_ina219():
     try:
         return INA219(addr=0x43)
-    except OSError as error:
+    except Exception as error:
         logging.warning("INA219 init failed: %s", error)
         return None
 
