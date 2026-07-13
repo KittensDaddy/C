@@ -34,9 +34,20 @@ def handle_scroll(active_idx, total_items):
     return active_idx
 
 def draw_battery_bar():
-    bus_voltage = ina219.getBusVoltage_V()             # voltage on V- (load side)
-    shunt_voltage = ina219.getShuntVoltage_mV() / 1000 # voltage between V+ and V- across the shunt
-    p = (bus_voltage - 3) / 1.2 * 100
+    if ina219 is None:
+        # Draw an empty bar when the sensor is unavailable.
+        draw.rectangle((10, height - 10, width - 10, height - 5), outline=current_theme["text"])
+        return
+
+    try:
+        bus_voltage = ina219.getBusVoltage_V()             # voltage on V- (load side)
+        shunt_voltage = ina219.getShuntVoltage_mV() / 1000 # voltage between V+ and V- across the shunt
+        p = (bus_voltage - 3) / 1.2 * 100
+    except OSError:
+        # I2C may become temporarily unavailable; keep UI responsive.
+        draw.rectangle((10, height - 10, width - 10, height - 5), outline=current_theme["text"])
+        return
+
     if p > 100:
         p = 100
     if p < 0:

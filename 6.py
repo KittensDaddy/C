@@ -7,7 +7,6 @@ import subprocess
 import threading
 import sys
 from PIL import Image, ImageDraw, ImageFont
-from INA219 import INA219
 from display import (display_message, display_message_with_wrap, draw_menu, 
                     display_file_on_lcd, draw_battery_bar, exit_stealth_mode,
                     stealth, splash_screen, display_top)

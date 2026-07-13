@@ -3,6 +3,7 @@ import threading
 from INA219 import INA219
 from PIL import ImageFont, Image, ImageDraw
 import LCD_1in44
+import logging
 
 # Constants
 OPTIONS_PER_PAGE = 11
@@ -25,7 +26,12 @@ state = {
 }
 
 # Initialize INA219 sensor
-ina219 = INA219(addr=0x43)
+try:
+    ina219 = INA219(addr=0x43)
+except OSError as e:
+    # Allow running without INA219 hardware connected.
+    logging.warning("INA219 initialization failed (%s). Battery readings disabled.", e)
+    ina219 = None
 
 # Initialize LCD dimensions
 #width = LCD_1in44.LCD_WIDTH
