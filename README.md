@@ -33,6 +33,8 @@ use bullseye pi os lite 64bit
 - 
 - sudo python3 -m venv venv
 - source venv/bin/activate
+- sudo chown -R sun:sun /home/sun/venv
+- cd wifite2
 - pip3 install -r requirement.txt
 - sudo python3 setup.py install
 - sudo apt install aircrack-ng reaver bully hashcat tshark wireshark macchanger hcxtools
