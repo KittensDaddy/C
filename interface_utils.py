@@ -1,114 +1,151 @@
+from __future__ import annotations
+
+import shutil
 import subprocess
 import time
+
 import RPi.GPIO as GPIO
-from setting import KEY2_PIN, options
-from display import display_message, draw_menu
-selected_interface = None
 
-def get_wireless_interfaces():
-    interfaces = []
-    retries = 2
+import setting
 
-    while retries >= 0:
-        try:
-            # Run iwconfig to get wireless interface details
-            output = subprocess.check_output(['/usr/sbin/iwconfig'], text=True)
-            
-            # Split output into lines and parse each line
-            lines = output.splitlines()
-            current_interface = None
-            
-            for line in lines:
-                if "IEEE 802.11" in line or "unassociated" in line:  # This line indicates a wireless interface
-                    current_interface = line.split()[0]  # Get the interface name
-                    # Get driver information using ethtool
-                    try:
-                        driver_info = subprocess.check_output(['/usr/sbin/ethtool', '-i', current_interface], text=True)
-                        driver_name = next((line.split(": ")[1] for line in driver_info.splitlines() if "driver" in line), "Driver not found")
-                        if driver_name != "brcmfmac":  # Exclude interfaces with brcmfmac driver
-                            interfaces.append((current_interface, driver_name))
-                    except subprocess.CalledProcessError as e:
-                        interfaces.append((current_interface, "Error fetching driver info"))
-                        print(f"Error running ethtool for {current_interface}: {e}")
-                elif current_interface and ("Mode:Monitor" in line or "Mode:Managed" in line):
-                    # Ensure we only add interfaces that have a valid mode
-                    current_interface = None
-            
-            if interfaces:
-                return interfaces
-            elif retries > 0:
-                print(f"No interfaces found. Retrying in 2 seconds... ({retries} retries left)")
-                time.sleep(2)
-                retries -= 1
-                continue
-            else:
-                return [("No wireless interfaces found", "")]
 
-        except subprocess.CalledProcessError as e:
-            print(f"Error running iwconfig: {e}")
-            return [("Error fetching interfaces", "")]
-        except Exception as e:
-            print(f"Error: {e}")
-            return [("Error fetching interfaces", "")]
+IW_BIN = shutil.which("iw") or "/usr/sbin/iw"
+IP_BIN = shutil.which("ip") or "/usr/sbin/ip"
+ETHTOOL_BIN = shutil.which("ethtool") or "/usr/sbin/ethtool"
 
-# Initialize wireless interfaces
-wireless_interfaces = get_wireless_interfaces()
-if len(wireless_interfaces) > 1:
-    selected_interface = wireless_interfaces[1]
-else:
-    selected_interface = wireless_interfaces[0]
+wireless_interfaces: list[tuple[str, str]] = []
+selected_interface: tuple[str, str] | None = None
 
-def check_monitor_mode_and_enable(interface):
-    interface_name = interface[0] if isinstance(interface, tuple) else interface
-    
-    try:
-        # Check for interfaces in monitor mode
-        result = subprocess.run(["/usr/sbin/iwconfig"], capture_output=True, text=True)
-        monitor_mode_found = False
 
-        # Check if any interface is in monitor mode
+def _driver_name(interface_name: str) -> str:
+    result = subprocess.run([ETHTOOL_BIN, "-i", interface_name], capture_output=True, text=True, check=False)
+    for line in result.stdout.splitlines():
+        if line.startswith("driver:"):
+            return line.split(":", 1)[1].strip()
+    return "unknown"
+
+
+def _normalize_interface(interface: tuple[str, str] | str | None) -> str | None:
+    if interface is None:
+        return None
+    if isinstance(interface, tuple):
+        return interface[0]
+    return interface
+
+
+def _preferred_interface(interfaces: list[tuple[str, str]]) -> tuple[str, str] | None:
+    if not interfaces:
+        return None
+    for interface in interfaces:
+        if interface[1] != "brcmfmac":
+            return interface
+    return interfaces[0]
+
+
+def get_wireless_interfaces() -> list[tuple[str, str]]:
+    result = subprocess.run([IW_BIN, "dev"], capture_output=True, text=True, check=False)
+    interfaces: list[tuple[str, str]] = []
+
+    if result.returncode == 0:
         for line in result.stdout.splitlines():
-            if "Mode:Monitor" in line:
-                monitor_mode_found = True
-                break
-        
-        # If no monitor mode found, start airmon-ng on the selected interface
-        if not monitor_mode_found:
-            print(f"No interfaces in monitor mode. Starting airmon-ng on {interface_name}...")
-            subprocess.run(["sudo", "/usr/sbin/airmon-ng", "start", interface_name], check=True)
-            print(f"Started monitor mode on {interface_name}.")
-        else:
-            print("An interface is already in monitor mode.")
-    
-    except subprocess.CalledProcessError as e:
-        print(f"Error during operation: {e}")
-        time.sleep(5)
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        time.sleep(5)
-        
-def check_monitor_mode_and_disable(interface):
-    interface_name = interface[0] if isinstance(interface, tuple) else interface
-    
-    try:
-        # Check for interfaces in monitor mode
-        result = subprocess.run(["/usr/sbin/iwconfig"], capture_output=True, text=True)
-        monitor_mode_found = False
+            stripped = line.strip()
+            if stripped.startswith("Interface "):
+                interface_name = stripped.split()[1]
+                interfaces.append((interface_name, _driver_name(interface_name)))
 
-        # Check if any interface is in monitor mode
-        for line in result.stdout.splitlines():
-            if "Mode:Monitor" in line:
-                monitor_mode_found = True
-                subprocess.run(["sudo", "ifconfig", interface_name, "down"], check=True)
-                display_message("Disabling monitor mode...")
-                subprocess.run(["sudo", "iwconfig", interface_name, "mode", "managed"], check=True)
-                display_message("Monitor mode disabled.")
-                subprocess.run(["sudo", "ifconfig", interface_name, "up"], check=True)
-                display_message("Interface enabled.")
+    if interfaces:
+        return interfaces
 
-    except subprocess.CalledProcessError as e:
-        print(f"Error during operation: {e}")
-        time.sleep(5)
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        time.sleep (5)
+    fallback = subprocess.run([shutil.which("iwconfig") or "/usr/sbin/iwconfig"], capture_output=True, text=True, check=False)
+    for line in fallback.stdout.splitlines():
+        if "IEEE 802.11" in line:
+            interface_name = line.split()[0]
+            interfaces.append((interface_name, _driver_name(interface_name)))
+    return interfaces
+
+
+def refresh_wireless_interfaces() -> list[tuple[str, str]]:
+    global wireless_interfaces, selected_interface
+
+    wireless_interfaces = get_wireless_interfaces()
+    setting.app_state.wireless_interfaces = list(wireless_interfaces)
+
+    if setting.app_state.selected_interface in wireless_interfaces:
+        selected_interface = setting.app_state.selected_interface
+    else:
+        selected_interface = _preferred_interface(wireless_interfaces)
+
+    setting.app_state.selected_interface = selected_interface
+    return wireless_interfaces
+
+
+def get_selected_interface() -> tuple[str, str] | None:
+    if setting.app_state.selected_interface is None:
+        refresh_wireless_interfaces()
+    return setting.app_state.selected_interface
+
+
+def get_selected_interface_name() -> str | None:
+    selected = get_selected_interface()
+    return _normalize_interface(selected)
+
+
+def cycle_selected_interface() -> tuple[str, str] | None:
+    global selected_interface
+    interfaces = refresh_wireless_interfaces()
+    if not interfaces:
+        selected_interface = None
+        setting.app_state.selected_interface = None
+        return None
+
+    current = get_selected_interface()
+    if current not in interfaces:
+        selected_interface = interfaces[0]
+    else:
+        current_index = interfaces.index(current)
+        selected_interface = interfaces[(current_index + 1) % len(interfaces)]
+
+    setting.app_state.selected_interface = selected_interface
+    return selected_interface
+
+
+def set_interface_mode(interface: tuple[str, str] | str | None, mode: str) -> bool:
+    interface_name = _normalize_interface(interface) or get_selected_interface_name()
+    if not interface_name:
+        return False
+
+    commands = [
+        ["sudo", IP_BIN, "link", "set", interface_name, "down"],
+        ["sudo", IW_BIN, "dev", interface_name, "set", "type", mode],
+        ["sudo", IP_BIN, "link", "set", interface_name, "up"],
+    ]
+    for command in commands:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            return False
+    return True
+
+
+def check_monitor_mode_and_enable(interface: tuple[str, str] | str | None = None) -> bool:
+    return set_interface_mode(interface, "monitor")
+
+
+def check_monitor_mode_and_disable(interface: tuple[str, str] | str | None = None) -> bool:
+    return set_interface_mode(interface, "managed")
+
+
+def monitor_buttons() -> None:
+    from display import exit_stealth_mode, stealth
+
+    while True:
+        if GPIO.input(setting.KEY2_PIN) == GPIO.LOW:
+            stealth()
+            setting.debounce()
+        elif GPIO.input(setting.KEY3_PIN) == GPIO.LOW and setting.state["stealth_mode_active"].is_set():
+            setting.state["stealth_mode_active"].clear()
+            exit_stealth_mode()
+            setting.debounce()
+        time.sleep(0.05)
+
+
+refresh_wireless_interfaces()
