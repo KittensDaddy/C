@@ -21,6 +21,8 @@ class Battery:
         self.percent = None
         self._last_read = 0.0        # cache: I2C read is polled per frame
         self._last_vstr = "-.-V"
+        self.charging = False        # current flowing into the battery
+        self.current_ma = 0.0
         self._init()
 
     def _init(self):
@@ -61,6 +63,12 @@ class Battery:
                 p = (v - 3.0) / 1.2 * 100.0
                 self.percent = max(0, min(100, p))
                 self._last_vstr = "%.1fV" % v
+                try:
+                    # Positive current = flowing into the battery = charging.
+                    self.current_ma = self.ina.getCurrent_mA()
+                    self.charging = self.current_ma > 30
+                except Exception:  # noqa: BLE001
+                    pass
                 return self.percent, self._last_vstr
             except Exception:  # noqa: BLE001
                 self.available = False

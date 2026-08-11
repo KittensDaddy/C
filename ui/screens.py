@@ -38,6 +38,12 @@ def _battery_bars(draw, x, y, pct):
     for i in range(n):
         sx = x + 2 + i * (seg + gap)
         draw.rectangle((round(sx), y + 2, round(sx + seg), y + ht - 2), fill=col)
+    # Charging: overlay a lightning bolt so it's clear power is flowing in.
+    if getattr(battery.battery, "charging", False):
+        cx, cy = x + w // 2, y + ht // 2
+        draw.polygon([(cx, cy - 4), (cx + 3, cy - 4), (cx, cy),
+                      (cx + 2, cy), (cx - 2, cy + 5), (cx, cy + 1),
+                      (cx - 3, cy + 1)], fill=(255, 235, 0))
 
 
 def status_bar(draw):
