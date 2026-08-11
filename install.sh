@@ -167,20 +167,17 @@ install_wifite() {
             return
         fi
     else
-        ok "wifite2 already cloned"
+        ok "wifite2 already cloned at $WIFITE_DIR"
     fi
 
-    local pip_break=""
-    python3 -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages' && \
-        pip_break="--break-system-packages"
-
-    _start_spin "pip install wifite2..."
+    _start_spin "python3 setup.py install..."
     if ( cd "$WIFITE_DIR" && \
-         python3 -m pip install -e . $pip_break >> "$LOG" 2>&1 ); then
-        _end_spin "wifite2 pip OK"
+         python3 setup.py install >> "$LOG" 2>&1 ); then
+        _end_spin "wifite2 installed"
     else
-        _end_spin "pip warnings"
-        warn "pip install had warnings (see $LOG)"
+        _end_spin "install failed"
+        fail "setup.py install failed (see $LOG)"
+        return
     fi
 
     if command -v wifite >/dev/null; then
