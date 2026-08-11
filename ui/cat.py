@@ -27,7 +27,8 @@ def sprite(phase, color=(240, 240, 240), flip=False, scale=1):
     if flip:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
     if scale != 1:
-        img = img.resize((img.width * scale, img.height * scale), Image.NEAREST)
+        img = img.resize((max(1, int(img.width * scale)),
+                          max(1, int(img.height * scale))), Image.NEAREST)
     return img
 
 

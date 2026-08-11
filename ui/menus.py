@@ -58,7 +58,7 @@ def _cat_tick():
         if st["patch"] is not None and st["cid"] == id(c):
             c.paste(st["patch"], st["box"])          # erase previous cat
         st["phase"] = (st["phase"] + 0.14) % 1.0
-        sp = cat.sprite(st["phase"], flip=st["vx"] < 0, scale=2)
+        sp = cat.sprite(st["phase"], flip=st["vx"] < 0, scale=0.8)
         sw, sh = sp.size
         st["x"] += st["vx"]
         st["y"] += st["vy"]
