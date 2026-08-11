@@ -181,65 +181,59 @@ class AttackStatus:
 
     # -- rendering --------------------------------------------------------
     def render(self):
+        """Monochrome cyberpunk layout: text is white-on-dark with a shadow;
+        only the battery and the progress/countdown bars carry colour."""
         self._tick += 1
-        pal = theme.palette()
         d = display.begin()
         W, H = config.WIDTH, config.HEIGHT
+        WHITE = (245, 245, 245)
+        fnt = font()
         d.rectangle((0, 0, W, H), fill=theme.background())
-        f_sm, f_mid, f_big = theme.font(10), theme.font(13), theme.font(18)
         c, h, f = self.summary()
 
-        # Header: the interface + driver we attack with, plus TS.
-        d.rectangle((0, 0, W, 15), fill=theme.shadow_color())
-        theme.shadowed(d, self._header_title(), (3, 2), f_sm,
-                       color=theme.highlight_color())
+        # Header: interface + driver (+ TS state, shown mono via +/-).
+        d.rectangle((0, 0, W, 12), fill=theme.shadow_color())
+        theme.shadowed(d, self._header_title(), (3, 1), fnt, color=WHITE)
         ts = tailscale.status()
-        theme.shadowed(d, "TS", (W - 20, 2), f_sm,
-                       color=theme.accent_color() if ts == "up" else (255, 60, 60))
+        theme.shadowed(d, "TS+" if ts == "up" else "TS-", (W - 20, 1), fnt,
+                       color=WHITE)
+        d.line((0, 12, W, 12), fill=WHITE)
 
-        # Run progress: "3/12" + bar + cracked count. Few words.
+        # Run progress "3/12" + coloured bar + success count.
         theme.shadowed(d, "%d/%d" % (self.target_cur, self.target_total)
-                       if self.target_total else "scan", (3, 18), f_sm,
-                       color=pal["text"])
+                       if self.target_total else "scan", (3, 15), fnt, color=WHITE)
         if self.target_total:
-            theme.progress_bar(d, 42, 21, W - 74, 5,
+            theme.progress_bar(d, 34, 16, W - 66, 5,
                                100 * self.target_cur // self.target_total)
-        theme.shadowed(d, "+%d" % c, (W - 24, 18), f_sm, color=theme.accent_color())
+        theme.shadowed(d, "OK%d" % (c + h), (W - 28, 15), fnt, color=WHITE)
 
-        # Current target — BIG and alone on its line (shrink if it's long).
-        essid = (self.cur_essid or "scanning")[:14]
-        ef = f_big if len(essid) <= 9 else theme.font(15)
-        theme.shadowed(d, essid, (3, 31), ef, color=theme.accent_color())
-
-        # Phase chip + big live countdown.
-        secs = _to_secs(self.cur_timeout)
+        # Current target + phase + countdown (mono text, coloured gauge bar).
+        cur = (self.cur_essid or "scanning")[:12]
         if self.cur_phase:
-            theme.pill(d, 3, 55, self.cur_phase[:9], f_mid,
-                       bg=theme.mix(pal["background"], theme.accent_color(), 0.7))
+            cur = "%s %s" % (cur[:9], self.cur_phase[:6])
+        theme.shadowed(d, cur[:21], (3, 27), fnt, color=WHITE)
+        secs = _to_secs(self.cur_timeout)
         if self.cur_timeout:
-            theme.shadowed(d, self.cur_timeout, (W - 48, 52), f_big,
-                           color=theme.gauge_color(secs))
+            theme.shadowed(d, self.cur_timeout, (W - 28, 27), fnt, color=WHITE)
             pct = int(100 * secs / self._cd_max) if (secs and self._cd_max) else 100
-            theme.progress_bar(d, 3, 74, W - 6, 6, pct, color=theme.gauge_color(secs))
+            theme.progress_bar(d, 3, 38, W - 6, 4, pct, color=theme.gauge_color(secs))
 
-        d.line((0, 85, W, 85), fill=pal["text"])
+        d.line((0, 45, W, 45), fill=WHITE)
 
-        # Trophies — 2 big, well-spaced rows; cracked first, then handshakes.
-        rows = [(True, r) for r in self.results if r[1] == "cracked"]
-        rows += [(False, r) for r in self.results if r[1] == "handshake"]
-        y, bottom = 88, H - 20
-        for is_key, (essid, _, cred) in rows:
+        # Running log of previous attacks, each quoted success / failed.
+        y, bottom = 48, H - 11
+        for essid, status, cred in self.results[-6:]:
             if y > bottom:
                 break
-            col = theme.accent_color() if is_key else pal["text"]
-            theme.circle(d, 6, y + 7, 3, col)
-            text = ("%s %s" % ((essid or "?")[:8], cred)) if (is_key and cred) \
-                else (essid or "?")[:14]
-            theme.shadowed(d, text[:16], (14, y), f_mid, color=col)
-            y += 16
-        if f and y <= bottom:
-            theme.circle(d, 6, y + 7, 3, (255, 60, 60))
-            theme.shadowed(d, "%d failed" % f, (14, y), f_mid, color=(255, 60, 60))
+            ok = status in ("cracked", "handshake")
+            if status == "cracked" and cred:
+                tail = cred[:9]
+            else:
+                tail = "success" if ok else "failed"
+            glyph = "+" if ok else "-"
+            theme.shadowed(d, ("%s %s %s" % (glyph, (essid or "?")[:9], tail))[:21],
+                           (3, y), fnt, color=WHITE)
+            y += 10
 
         status_bar(d)
         display.show()
@@ -307,12 +301,10 @@ def _format_cmd(argv, mode, iface, driver):
 
 
 class CommandPreview:
-    """Punk-style pre-flight page: types out the wifite command line by line
-    so the user can recheck it before the attack fires. Timing is driven by
-    the caller (so a keypress can skip/cancel); this only renders."""
-
-    MAG = (255, 0, 160)
-    CYAN = (0, 235, 215)
+    """Cyberpunk pre-flight page: types out the wifite command line by line so
+    the user can recheck it before the attack fires. Monochrome text with hard
+    shadows; only structural fills (header/scanlines) are non-text. Timing is
+    driven by the caller (so a keypress can skip/cancel); this only renders."""
 
     def __init__(self, argv, mode="custom", iface="", driver=""):
         self.rows = _format_cmd(argv, mode, iface, driver)
@@ -325,43 +317,36 @@ class CommandPreview:
         self._tick += 1
         d = display.begin()
         W, H = config.WIDTH, config.HEIGHT
-        grn = theme.accent_color()
-        d.rectangle((0, 0, W, H), fill=(8, 6, 12))
-        for yy in range(0, H, 3):           # scanline texture
-            d.line((0, yy, W, yy), fill=(15, 11, 22))
+        WHITE = (245, 245, 245)
+        fnt = font()
+        d.rectangle((0, 0, W, H), fill=(6, 6, 6))
+        for yy in range(0, H, 3):           # scanline texture (dark grey)
+            d.line((0, yy, W, yy), fill=(16, 16, 16))
 
-        # glitchy header band
-        d.rectangle((0, 0, W, 14), fill=self.MAG)
-        gx = 4 + (self._tick % 2)           # 1px jitter = glitch feel
-        theme.shadowed(d, "RECHECK CMD", (gx, 2), theme.font(10),
-                       color=(0, 0, 0), shadow=(90, 0, 60))
-        if self._tick % 2:                  # blinking REC block
-            d.rectangle((W - 11, 3, W - 4, 10), fill=(0, 0, 0))
+        # inverted header band (white bar, black text) + blinking REC block
+        d.rectangle((0, 0, W, 12), fill=WHITE)
+        gx = 3 + (self._tick % 2)           # 1px jitter = glitch feel
+        theme.shadowed(d, "RECHECK CMD", (gx, 1), fnt, color=(0, 0, 0),
+                       shadow=(120, 120, 120))
+        if self._tick % 2:
+            d.rectangle((W - 10, 2, W - 4, 9), fill=(0, 0, 0))
 
         # revealed rows, scrolled so the newest stays visible
         visible = self.rows[:upto]
-        lh, top = 14, 17
-        max_rows = (H - top - 11) // lh
+        lh, top = 10, 15
+        max_rows = (H - top - 10) // lh
         start = max(0, len(visible) - max_rows)
         y = top
+        prefix = {"bin": "", "mode": "> ", "iface": "# "}
         for text, kind in visible[start:]:
-            if kind == "bin":
-                theme.shadowed(d, text, (4, y), theme.font(14), color=self.MAG)
-            elif kind == "mode":
-                theme.shadowed(d, "> " + text, (4, y), theme.font(12), color=grn)
-            elif kind == "iface":
-                theme.shadowed(d, "# " + text[:18], (4, y), theme.font(12),
-                               color=self.CYAN)
-            else:
-                theme.shadowed(d, "\xbb " + text[:18], (4, y), theme.font(12),
-                               color=(225, 225, 225))
+            theme.shadowed(d, (prefix.get(kind, "\xbb ") + text)[:21], (3, y),
+                           fnt, color=WHITE)
             y += lh
         # blinking block cursor after the last revealed row
-        if self._tick % 2 and y < H - 11:
-            d.rectangle((6, y + 1, 13, y + 9), fill=grn)
+        if self._tick % 2 and y < H - 10:
+            d.rectangle((4, y, 9, y + 7), fill=WHITE)
 
-        theme.shadowed(d, "PRESS run   K1 back", (3, H - 9), font(),
-                       color=(120, 120, 130))
+        theme.shadowed(d, "PRESS run  K1 back", (3, H - 9), fnt, color=WHITE)
         display.show()
 
 
