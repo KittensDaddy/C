@@ -126,11 +126,22 @@ install_packages() {
     info "apt update..."
     apt-get update -y >> "$LOG" 2>&1 || warn "apt update had warnings"
 
+    # Add Tailscale repo (Bookworm has it, but ensure latest)
+    if ! dpkg -s tailscale >/dev/null 2>&1; then
+        info "adding Tailscale repo..."
+        curl -fsSL https://pkgs.tailscale.com/stable/raspbian/bookworm.noarmor.gpg \
+            | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null 2>>"$LOG" || true
+        curl -fsSL https://pkgs.tailscale.com/stable/raspbian/bookworm.tailscale-keyring.list \
+            | tee /etc/apt/sources.list.d/tailscale.list >/dev/null 2>>"$LOG" || true
+        apt-get update -y >> "$LOG" 2>&1 || true
+    fi
+
     info "apt upgrade..."
     apt-get upgrade -y >> "$LOG" 2>&1 || warn "apt upgrade had warnings"
 
     local pkgs=(
-        python3 python3-pip python3-pil python3-numpy
+        python3 python3-pip python3-setuptools
+        python3-pil python3-numpy
         python3-lgpio python3-spidev python3-smbus2
         aircrack-ng reaver bully hashcat hcxtools
         tshark macchanger wireless-tools iw iproute2
@@ -200,10 +211,8 @@ Driver=brcmfmac
 [Link]
 Name=wl0
 EOF
-    info "wrote $f"
-    info "Driver=brcmfmac -> Name=wl0"
-    systemctl restart systemd-networkd >> "$LOG" 2>&1 || true
-    ok "Internal wifi will be named wl0 (after reboot)"
+    info "wrote $f (applies after reboot)"
+    ok "Internal wifi -> wl0"
 }
 
 # ---- [6] rtl8192eu driver (optional) ---------------------------------------
@@ -212,8 +221,18 @@ install_rtl() {
     read -r -p "       Install RTL8192EU USB driver? [y/N] " resp
     case "$resp" in
         y|Y|yes|YES)
-            info "Installing build dependencies..."
-            apt-get install -y raspberrypi-kernel-headers build-essential dkms >> "$LOG" 2>&1
+            # Auto-detect correct kernel headers package (Pi 5 vs Pi 4)
+            local kver kern_headers
+            kver=$(uname -r)
+            if apt-cache show "linux-headers-$kver" >/dev/null 2>&1; then
+                kern_headers="linux-headers-$kver"
+            elif apt-cache show linux-headers-rpi-v8 >/dev/null 2>&1; then
+                kern_headers="linux-headers-rpi-v8"
+            else
+                kern_headers="raspberrypi-kernel-headers"
+            fi
+            info "Installing: $kern_headers build-essential dkms"
+            apt-get install -y "$kern_headers" build-essential dkms >> "$LOG" 2>&1
             [[ -d /opt/rtl8192eu ]] && rm -rf /opt/rtl8192eu
 
             _start_spin "cloning driver..."
