@@ -36,6 +36,15 @@ def wait_event(timeout=0.2):
         return None
 
 
+def flush_events():
+    """Drop any queued button events (e.g. the press that opened this screen)."""
+    try:
+        while True:
+            _evq.get_nowait()
+    except queue.Empty:
+        pass
+
+
 def render_list(d, labels, active, start_idx=0):
     """Render up to OPTIONS_PER_PAGE labels, highlight active."""
     n = len(labels)
@@ -261,6 +270,7 @@ def run_and_show(preset):
     # any other press runs immediately; otherwise it auto-advances at 0.5s/line.
     cmd = attacker.build_command(iface, preset=preset)
     if cmd:
+        flush_events()          # drop the keypress that launched this attack
         prev = CommandPreview(cmd, mode=(preset.get("name") if preset else "custom"),
                               iface=name, driver=drv)
         skipped = False
