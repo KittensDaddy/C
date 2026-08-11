@@ -107,9 +107,9 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
             out2 = run(["/usr/sbin/iwlist", iface_name, "scan"])
             parsed = _parse_iwlist(out2.stdout) if out2 else []
         if not parsed:
-            # Fallback: nmcli
+            # Fallback: nmcli — pin to the external iface so it never scans wl0.
             out3 = run(["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL", "dev",
-                        "wifi", "list"])
+                        "wifi", "list", "ifname", iface_name])
             if out3:
                 parsed = _parse_nmcli(out3.stdout)
 

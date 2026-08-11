@@ -18,21 +18,23 @@ def font():
     return ImageFont.load_default()
 
 
-def _battery3(draw, x, y, pct):
-    """Chunky 3-segment battery icon: 1 bar red, 2 bars orange, 3 bars green."""
-    w, ht, gap = 30, 10, 2
+def _battery_bars(draw, x, y, pct):
+    """5-segment battery icon. Lit bars = charge (~20%/bar); colour by level:
+    low red, mid orange, high green."""
+    w, ht, gap, segs = 36, 10, 1, 5
     outline = theme.mix(theme.background(), (255, 255, 255), 0.6)
     draw.rectangle((x, y, x + w, y + ht), outline=outline)
     draw.rectangle((x + w + 1, y + 3, x + w + 3, y + ht - 3), fill=outline)  # nub
     if pct is None:
         return
+    n = max(1, min(segs, int(round(pct / 20.0))))
     if pct >= config.BATTERY_HIGH:
-        n, col = 3, (0, 220, 70)          # green
+        col = (0, 220, 70)                # green
     elif pct >= config.BATTERY_MID:
-        n, col = 2, (255, 150, 0)         # orange
+        col = (255, 150, 0)               # orange
     else:
-        n, col = 1, (255, 45, 45)         # red
-    seg = (w - 2 - gap * 2) / 3.0
+        col = (255, 45, 45)               # red
+    seg = (w - 2 - gap * (segs - 1)) / float(segs)
     for i in range(n):
         sx = x + 2 + i * (seg + gap)
         draw.rectangle((round(sx), y + 2, round(sx + seg), y + ht - 2), fill=col)
@@ -43,7 +45,7 @@ def status_bar(draw):
     the bottom-right."""
     h, W = config.HEIGHT, config.WIDTH
     pct, _ = battery.battery.read()         # single read per frame
-    _battery3(draw, 2, h - 11, pct)
+    _battery_bars(draw, 2, h - 11, pct)
 
     # Running cat loops across the bottom-right half of the screen.
     x0, x1 = 60, W + cat.W
