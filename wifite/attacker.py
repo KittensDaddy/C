@@ -11,6 +11,8 @@ import threading
 import time
 import json
 import os
+import re
+import select
 
 import config
 from wifite import interface as iface_mod
@@ -225,9 +227,11 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
     # Monitor mode via context manager
     monitor = iface_mod.enable_monitor(iface_name)
     try:
+        # Binary + unbuffered: wifite redraws its live scan/attack line with
+        # carriage returns and no newline, so readline() would block until the
+        # scan ends. We read raw chunks and split on \r and \n ourselves.
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, errors="replace")
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
 
         parser = OutputParser()
         results = {"cracked": [], "handshakes": [], "failed": [], "cancelled": False}
@@ -265,6 +269,8 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
                     if status_cb:
                         status_cb({"type": "message", "text": ev.detail})
 
+        fd = proc.stdout.fileno()
+        buf = ""
         done = False
         while not done:
             if stop_flag and stop_flag.is_set():
@@ -276,16 +282,31 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
                     pass
                 results["cancelled"] = True
                 break
+            # Wait up to 0.3s for data so stop_flag stays responsive on idle.
             try:
-                line = proc.stdout.readline()
+                ready, _, _ = select.select([fd], [], [], 0.3)
             except Exception:
                 break
-            if not line:
-                done = True
+            if not ready:
+                if progress_cb:
+                    progress_cb(None, "elapsed %ds" % int(time.time() - start_time))
+                continue
+            try:
+                chunk = os.read(fd, 4096)
+            except Exception:
                 break
-            events = parser.feed(line)
-            if events:
-                _dispatch(events)
+            if not chunk:
+                done = True
+                if buf.strip():
+                    _dispatch(parser.feed(buf))
+                break
+            buf += chunk.decode("utf-8", "replace")
+            # Split on CR/LF; keep the trailing (possibly incomplete) segment.
+            segments = re.split(r"[\r\n]", buf)
+            buf = segments.pop()
+            for seg in segments:
+                if seg.strip():
+                    _dispatch(parser.feed(seg))
             if progress_cb:
                 progress_cb(None, "elapsed %ds" % int(time.time() - start_time))
         proc.wait()
