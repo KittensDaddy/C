@@ -102,6 +102,8 @@ class AttackStatus:
         self.cur_timeout = ""     # "0:38" countdown pulled from wifite, if any
         self.scan_targets = 0     # live count while wifite is still scanning
         self.scan_clients = 0
+        self.started = False      # True once wifite emits its first real event
+        self.last_msg = ""        # latest boot/message line, shown while starting
         self.cur_signal = None    # current target power (dBm)
         self.cur_clients = 0      # associated clients on current target
         self.target_start = time.time()   # when the current target began
@@ -130,6 +132,12 @@ class AttackStatus:
     def handle_event(self, ev):
         t = ev.get("type", "")
         essid = ev.get("essid", "") or ""
+        if t == "message":
+            # While wifite boots (monitor mode, killing procs) show its output.
+            if not self.started and ev.get("text"):
+                self.last_msg = ev["text"][:21]
+            return
+        self.started = True       # first real event -> wifite is up and scanning
         if t == "scan":
             self.scan_targets = ev.get("targets", 0)
             self.scan_clients = ev.get("clients", 0)
@@ -232,6 +240,21 @@ class AttackStatus:
         theme.shadowed(d, "TS+" if ts == "up" else "TS-", (W - 20, 1), fnt,
                        color=WHITE)
         d.line((0, 12, W, 12), fill=WHITE)
+
+        if not self.started:
+            # wifite is still initialising — monitor mode, killing conflicting
+            # processes, loading. Show its boot output; scanning hasn't begun.
+            theme.shadowed(d, "STARTING %s" % theme.spinner(self._tick),
+                           (3, 15), fnt, color=WHITE)
+            theme.shadowed(d, "%ds" % int(time.time() - self.start_time),
+                           (W - 28, 15), fnt, color=WHITE)
+            if self.last_msg:
+                theme.shadowed(d, self.last_msg[:21], (3, 29), fnt,
+                               color=theme.accent_color())
+            theme.shadowed(d, "waiting for scan", (3, 45), fnt, color=WHITE)
+            status_bar(d)
+            display.show()
+            return
 
         attacking = self.target_total > 0 or bool(self.cur_essid) or bool(self.results)
         # Header line: "3/12" + bar while attacking, else "SCANNING".
