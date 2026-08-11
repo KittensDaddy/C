@@ -113,14 +113,18 @@ def _parse_iwlist(stdout):
 def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
     """Scan for networks. Returns list of net dicts."""
     iface_name = iface_mod.iface_name(ifname)
-    # Managed mode + interface up, or `iw scan` returns nothing / errors.
+    # A prior attack can leave the external adapter in monitor mode (ifconfig
+    # shows PROMISC + an UNSPEC hwaddr), where a normal scan returns nothing.
+    # Force it back to managed + up unconditionally before scanning.
     try:
-        if iface_mod.is_in_monitor(iface_name):
-            iface_mod.disable_monitor(iface_name)
+        iface_mod.disable_monitor(iface_name)
     except Exception:  # noqa: BLE001
         pass
+    run([IP, "link", "set", iface_name, "down"])
+    run([IW, "dev", iface_name, "set", "type", "managed"])
     run([IP, "link", "set", iface_name, "up"])
-    _log("scanning on %s (iw=%s)" % (iface_name, IW))
+    time.sleep(0.5)     # let the mode switch settle before scanning
+    _log("scanning on %s (iw=%s), forced managed" % (iface_name, IW))
 
     nets = []
     end = time.time() + (duration or 8)
