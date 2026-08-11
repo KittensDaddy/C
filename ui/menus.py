@@ -199,6 +199,35 @@ def main_menu():
 # --------------------------------------------------------------------------
 # Scan & Attack
 # --------------------------------------------------------------------------
+def _scan_with_progress(iface_name, title="SCAN"):
+    """Run a scan in the background and render a live countdown + found count.
+    Returns the sorted network list."""
+    duration = config.INTERACTIVE_SCAN_SECONDS
+    state = {"n": 0, "done": False, "nets": []}
+
+    def worker():
+        nets = sc.scan(iface_name, duration=duration,
+                       progress_cb=lambda n: state.__setitem__("n", n))
+        state["nets"] = sc.sort_by_signal(nets)
+        state["done"] = True
+
+    start = time.time()
+    threading.Thread(target=worker, daemon=True).start()
+    while not state["done"]:
+        left = max(0.0, duration - (time.time() - start))
+        d = display.begin()
+        box(d, title)
+        theme.shadowed(d, ("scan %s" % iface_name)[:20], (3, 16), font())
+        theme.shadowed(d, "found %d nets" % state["n"], (3, 28), font(),
+                       color=theme.accent_color())
+        theme.progress_bar(d, 3, 44, config.WIDTH - 6, 5,
+                           int(100 * left / duration))
+        theme.shadowed(d, "%ds left" % int(left + 0.5), (3, 52), font())
+        display.show()
+        time.sleep(0.1)
+    return state["nets"]
+
+
 def scan_attack():
     iface = iface_mod.pick_external(iface_mod.get_interfaces())
     if not iface:
@@ -207,17 +236,7 @@ def scan_attack():
         return
     config.Runtime.selected_interface = iface
 
-    pv = ProgressView("SCAN")
-    pv.push("Scanning %s..." % iface[0])
-    pv.render()
-
-    def _prog(n):
-        pv.push("found %d nets" % n)
-        pv.render()
-
-    nets = sc.scan(iface[0], duration=config.INTERACTIVE_SCAN_SECONDS,
-                   progress_cb=_prog, stop_flag=None)
-    nets = sc.sort_by_signal(nets)
+    nets = _scan_with_progress(iface[0], "SCAN")
 
     if not nets:
         pv.push("ERR no networks found")
@@ -513,17 +532,7 @@ def exclude_menu():
         status("No external interface")
         time.sleep(1.5)
         return
-    pv = ProgressView("SCAN")
-    pv.push("scanning...")
-    pv.render()
-
-    def _prog(n):
-        pv.push("found %d" % n)
-        pv.render()
-
-    nets = sc.scan(iface[0], duration=config.INTERACTIVE_SCAN_SECONDS,
-                   progress_cb=_prog)
-    nets = sc.sort_by_signal(nets)
+    nets = _scan_with_progress(iface[0], "EXCLUDE")
     if not nets:
         pv.push("ERR no networks")
         pv.render()
