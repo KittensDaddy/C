@@ -72,7 +72,14 @@ def _build_request_cmd(req):
         # filters and interface opts to avoid flag duplication.
         _append_filters(cmd, req.filters)
         _append_interface_opts(cmd, req.interface_opts)
-        cmd.extend(req.preset.get("args", []))
+        preset_args = list(req.preset.get("args", []))
+        # Headless boxes have no keyboard to stop scanning, so every preset
+        # must pillage: -p <scan> makes wifite attack all targets after a
+        # fixed scan window. Skip if the preset already sets it explicitly.
+        if not any(a in ("-p", "--pillage") for a in preset_args):
+            scan = req.preset.get("scan", 20)
+            cmd += ["-p", str(scan)]
+        cmd.extend(preset_args)
     elif req.target_essid or req.target_bssid:
         cmd.extend(_config_flags(req, pillage=False))
         if req.target_bssid:

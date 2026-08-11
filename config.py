@@ -149,14 +149,16 @@ DEFAULT_INTERFACE_OPTS = [
 # ---------------------------------------------------------------------------
 # Quick-run presets
 # ---------------------------------------------------------------------------
+# "scan" = seconds to scan before auto-attacking (wifite -p / pillage). Required
+# for headless operation: without it wifite waits forever for a keypress.
 PRESETS = [
-    {"name": "PIXIE Rush",     "desc": "Fast WPS pixie dust", "args": ["--wps-only", "--pixie", "--wps-time", "30"]},
-    {"name": "WPA Grab",       "desc": "Passive handshake",   "args": ["--no-wps", "--no-pmkid", "--nodeauths"]},
-    {"name": "PMKID Hunter",   "desc": "PMKID capture",       "args": ["--no-wps", "--pmkid"]},
-    {"name": "Full Power",     "desc": "All attacks, all bands", "args": ["-ab"]},
-    {"name": "PIXIE Q60",      "desc": "WPS pixie 60s",       "args": ["--wps-only", "--pixie", "--wps-time", "60"]},
-    {"name": "Survey Only",    "desc": "No crack, no deauth", "args": ["--skip-crack", "--nodeauths"]},
-    {"name": "WPA3 Focus",     "desc": "WPA3 only",           "args": ["--wpa3"]},
+    {"name": "PIXIE Rush",     "desc": "Fast WPS pixie dust", "scan": 15, "args": ["--wps-only", "--pixie", "--wps-time", "30"]},
+    {"name": "WPA Grab",       "desc": "Passive handshake",   "scan": 30, "args": ["--no-wps", "--no-pmkid", "--nodeauths"]},
+    {"name": "PMKID Hunter",   "desc": "PMKID capture",       "scan": 20, "args": ["--no-wps", "--pmkid"]},
+    {"name": "Full Power",     "desc": "All attacks, all bands", "scan": 30, "args": ["-ab"]},
+    {"name": "PIXIE Q60",      "desc": "WPS pixie 60s",       "scan": 20, "args": ["--wps-only", "--pixie", "--wps-time", "60"]},
+    {"name": "Survey Only",    "desc": "No crack, no deauth", "scan": 30, "args": ["--skip-crack", "--nodeauths"]},
+    {"name": "WPA3 Focus",     "desc": "WPA3 only",           "scan": 25, "args": ["--wpa3"]},
 ]
 
 # ---------------------------------------------------------------------------
