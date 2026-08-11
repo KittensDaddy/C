@@ -113,6 +113,14 @@ enable_hardware() {
         info "added gpio pull-ups for HAT buttons"
         added=1
     fi
+    # The battery sensor needs /dev/i2c-1, which only appears when the i2c-dev
+    # module is loaded. dtparam=i2c_arm=on enables the controller but not this.
+    if ! grep -q "^i2c-dev" /etc/modules 2>/dev/null; then
+        echo "i2c-dev" >> /etc/modules
+        info "added i2c-dev to /etc/modules"
+        added=1
+    fi
+    modprobe i2c-dev >> "$LOG" 2>&1 || true   # load now so it works pre-reboot
     if [[ $added -eq 1 ]]; then
         ok "Hardware config updated ($conf)"
     else
@@ -128,10 +136,14 @@ install_packages() {
 
     # Add Tailscale repo (Bookworm has it, but ensure latest)
     if ! dpkg -s tailscale >/dev/null 2>&1; then
-        info "adding Tailscale repo..."
-        curl -fsSL https://pkgs.tailscale.com/stable/raspbian/bookworm.noarmor.gpg \
+        # Use the running release's codename (bookworm/trixie/...) not a hardcode.
+        local codename="bookworm"
+        [[ -r /etc/os-release ]] && codename=$(. /etc/os-release && \
+            echo "${VERSION_CODENAME:-bookworm}")
+        info "adding Tailscale repo (raspbian/$codename)..."
+        curl -fsSL "https://pkgs.tailscale.com/stable/raspbian/${codename}.noarmor.gpg" \
             | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null 2>>"$LOG" || true
-        curl -fsSL https://pkgs.tailscale.com/stable/raspbian/bookworm.tailscale-keyring.list \
+        curl -fsSL "https://pkgs.tailscale.com/stable/raspbian/${codename}.tailscale-keyring.list" \
             | tee /etc/apt/sources.list.d/tailscale.list >/dev/null 2>>"$LOG" || true
         apt-get update -y >> "$LOG" 2>&1 || true
     fi
@@ -142,7 +154,7 @@ install_packages() {
     local pkgs=(
         python3 python3-pip python3-setuptools
         python3-pil python3-numpy
-        python3-lgpio python3-spidev python3-smbus2
+        python3-lgpio python3-spidev python3-smbus2 i2c-tools
         aircrack-ng reaver bully hashcat hcxtools
         tshark macchanger wireless-tools iw iproute2
         network-manager dnsutils curl git
