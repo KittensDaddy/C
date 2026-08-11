@@ -143,36 +143,36 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
     results = {"cracked": [], "handshakes": [], "failed": []}
     start = time.time()
 
-    def on_cracked(essid, psk):
-        results["cracked"].append({"essid": essid, "psk": psk})
-        if status_cb:
-            status_cb({"type": "cracked", "essid": essid, "psk": psk})
-        record_cracked(essid, psk)
-
-    def on_handshake(essid, bssid):
-        results["handshakes"].append(essid)
-        if status_cb:
-            status_cb({"type": "handshake", "essid": essid})
-
-    def on_failed(essid):
-        results["failed"].append(essid)
-        if status_cb:
-            status_cb({"type": "failed", "essid": essid})
-
-    def on_phase(essid, phase):
-        if status_cb:
-            status_cb({"type": "phase", "essid": essid, "phase": phase})
-
-    def on_message(text):
-        if status_cb:
-            status_cb({"type": "message", "text": text})
-
-    def on_attack(essid, bssid):
-        if status_cb:
-            status_cb({"type": "attack", "essid": essid, "bssid": bssid})
-
-    parser.handler = _Handler(on_cracked, on_handshake, on_failed,
-                              on_phase, on_message, on_attack)
+    def _dispatch_events(events):
+        for ev in events:
+            t = ev.type.value
+            if ev.type == output.EventType.CRACKED:
+                psk = ev.credential
+                results["cracked"].append({"essid": ev.essid, "psk": psk})
+                if status_cb:
+                    status_cb({"type": t, "essid": ev.essid, "psk": psk})
+                record_cracked(ev.essid, psk)
+            elif ev.type == output.EventType.HANDSHAKE:
+                results["handshakes"].append(ev.essid)
+                if status_cb:
+                    status_cb({"type": t, "essid": ev.essid})
+            elif ev.type == output.EventType.FAILED:
+                results["failed"].append(ev.essid)
+                if status_cb:
+                    status_cb({"type": t, "essid": ev.essid})
+            elif ev.type == output.EventType.TARGET:
+                if status_cb:
+                    status_cb({"type": "attack", "essid": ev.essid,
+                               "bssid": ev.bssid})
+            elif ev.type in (output.EventType.PHASE, output.EventType.CRACKING,
+                            output.EventType.SCAN, output.EventType.PMKID,
+                            output.EventType.SKIPPED, output.EventType.CLIENT,
+                            output.EventType.DEAUTH):
+                if status_cb:
+                    status_cb(ev.as_dict())
+            elif ev.type == output.EventType.MESSAGE:
+                if status_cb:
+                    status_cb({"type": "message", "text": ev.detail})
 
     done = False
     while not done:
@@ -188,7 +188,9 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
         if not line:
             done = True
             break
-        parser.feed(line)
+        events = parser.feed(line)
+        if events:
+            _dispatch_events(events)
         elapsed = int(time.time() - start)
         if progress_cb:
             progress_cb(None, "elapsed %ds" % elapsed)
@@ -200,19 +202,6 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
     results["ok"] = True
     results["command"] = " ".join(cmd)
     return results
-
-
-class _Handler:
-    def __init__(self, cracked, handshake, failed, phase, message, attack):
-        self.on_cracked = cracked
-        self.on_handshake = handshake
-        self.on_failed = failed
-        self.on_phase = phase
-        self.on_message = message
-        self.on_attack = attack
-
-    def __getattr__(self, name):
-        return lambda *a, **k: None
 
 
 def record_cracked(essid, psk):

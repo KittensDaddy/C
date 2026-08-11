@@ -1,197 +1,184 @@
 # -*- coding: utf-8 -*-
-"""Structured parser for wifite2 stdout (kimocoder/wifite2).
-
-Converts wifite's ANSI-colored output into discrete events for the UI.
-Based on actual wifite2 source: Color.s() token expansion, target.to_str(),
-attack progress via Color.pattack(), and handshake/crack/fail messages.
-"""
+"""Typed, line-oriented parser for wifite2 output."""
+from dataclasses import dataclass, field
+from enum import Enum
 import re
+from typing import Any, Dict, List, Optional
 
-ANSI = re.compile(r"\x1b\[[0-?9;]*[mK]")
-
-
-def strip_ansi(s):
-    if s is None:
-        return ""
-    return ANSI.sub("", s)
+ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+BSSID = r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}"
 
 
-# Color tokens that wifite2 emits (expanded by Color.s() before printing)
-# After expansion: {+} -> " [\x1b[2m[\x1b[0m\x1b[32m+\x1b[0m\x1b[2m]\x1b[0m"
-# After strip_ansi: "[+]"
-# {!} -> "[!]", {?} -> "[?]"
+class EventType(str, Enum):
+    SCAN = "scan"
+    TARGET = "target"
+    PHASE = "phase"
+    HANDSHAKE = "handshake"
+    PMKID = "pmkid"
+    CRACKING = "cracking"
+    CRACKED = "cracked"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    CLIENT = "client"
+    DEAUTH = "deauth"
+    MESSAGE = "message"
+    PROCESS_EXIT = "process_exit"
+
+
+@dataclass(frozen=True)
+class AttackEvent:
+    type: EventType
+    essid: Optional[str] = None
+    bssid: Optional[str] = None
+    phase: Optional[str] = None
+    detail: Optional[str] = None
+    credential: Optional[str] = None
+    targets: Optional[int] = None
+    clients: Optional[int] = None
+    current: Optional[int] = None
+    total: Optional[int] = None
+    exit_code: Optional[int] = None
+    cancelled: bool = False
+    raw: Optional[str] = field(default=None, repr=False)
+
+    def as_dict(self) -> Dict[str, Any]:
+        value = {k: v for k, v in self.__dict__.items()
+                 if v is not None and k != "raw"}
+        value["type"] = self.type.value
+        if self.credential is not None:
+            value["psk"] = self.credential
+        return value
+
+    @property
+    def compact(self) -> str:
+        name = (self.essid or "?")[:13]
+        if self.type == EventType.HANDSHAKE:
+            return "HS %s" % name
+        if self.type == EventType.PMKID:
+            return "PMKID FOUND"
+        if self.type == EventType.CRACKED:
+            return "KEY %s" % name
+        if self.type == EventType.DEAUTH:
+            if self.current is not None and self.total is not None:
+                return "WPA DEAUTH %d/%d" % (self.current, self.total)
+            return "WPA DEAUTH"
+        if self.type == EventType.FAILED:
+            return "FAIL %s" % name
+        if self.type == EventType.SKIPPED:
+            return "SKIP %s" % name
+        if self.type == EventType.PHASE:
+            return (self.phase or self.detail or "ATTACK")[:20]
+        if self.type == EventType.SCAN:
+            return "SCAN %d AP / %d STA" % (self.targets or 0,
+                                            self.clients or 0)
+        return (self.detail or self.raw or self.type.value.upper())[:20]
+
+
+def strip_ansi(value: Optional[str]) -> str:
+    return ANSI.sub("", value or "")
 
 
 class OutputParser:
-    """Feeds lines, calls handler events."""
+    """Return typed events. Unknown lines remain visible as MESSAGE events."""
 
-    def __init__(self, handler=None):
-        self.handler = handler or _null_handler
-        self._current_essid = None
-        self._current_bssid = None
-        self._scanning = False
-        self._target_count = 0
-        self._client_count = 0
+    def __init__(self):
+        self.current_essid = None
+        self.current_bssid = None
 
-    def emit(self, name, *args):
-        try:
-            getattr(self.handler, name)(*args)
-        except Exception:
-            pass
+    def feed(self, chunk: str) -> List[AttackEvent]:
+        events = []
+        # Wifite uses both newline and carriage return for live progress.
+        for value in re.split(r"[\r\n]+", strip_ansi(chunk)):
+            line = value.strip()
+            if line:
+                events.append(self._parse(line))
+        return events
 
-    def feed(self, line):
-        raw = strip_ansi(line).strip()
-        if not raw:
-            return
-        self._parse(raw)
+    def _event(self, kind, line, **values):
+        values.setdefault("essid", self.current_essid)
+        values.setdefault("bssid", self.current_bssid)
+        return AttackEvent(kind, raw=line, **values)
 
-    def _parse(self, line):
-        # ---- Scanning status (carriage-return line) ----
-        # "[+] Scanning [00:12] Targets: 5 Clients: 1 | Ctrl+C to stop"
-        m = re.search(
-            r"\[\+\]\s+Scanning\s.*?Targets:\s*(\d+).*?Clients:\s*(\d+)",
-            line)
-        if m:
-            self._scanning = True
-            self._target_count = int(m.group(1))
-            self._client_count = int(m.group(2))
-            self.emit("on_scan", self._target_count, self._client_count)
-            return
+    def _parse(self, line: str) -> AttackEvent:
+        match = re.search(
+            r"\[\+\]\s+Scanning.*?Targets:\s*(\d+).*?Clients:\s*(\d+)",
+            line, re.I)
+        if not match:
+            match = re.search(
+                r"Scanning\s+\(native\).*?Found\s+(\d+)\s+target.*?(\d+)\s+client",
+                line, re.I)
+        if match:
+            return self._event(EventType.SCAN, line, targets=int(match.group(1)),
+                               clients=int(match.group(2)))
 
-        # "[+] Scanning (native). Found N target(s), M client(s)..."
-        m = re.search(
-            r"\[\+\]\s+Scanning\s+\(native\).*?Found\s+(\d+)\s+target.*?(\d+)\s+client",
-            line)
-        if m:
-            self._scanning = True
-            self._target_count = int(m.group(1))
-            self._client_count = int(m.group(2))
-            self.emit("on_scan", self._target_count, self._client_count)
-            return
+        match = re.search(r"found target\s+(%s)\s+\((.*?)\)" % BSSID,
+                          line, re.I)
+        if match:
+            self.current_bssid, self.current_essid = match.group(1), match.group(2)
+            return self._event(EventType.TARGET, line)
 
-        # ---- Found a specific target during scan ----
-        # "[+] found target AA:BB:CC:DD:EE:FF (MyNetwork)"
-        m = re.search(
-            r"\[\+\]\s+found target\s+([0-9a-fA-F:]{17})\s+\((.+)\)", line)
-        if m:
-            self.emit("on_found", m.group(2), m.group(1))
-            return
+        match = re.search(
+            r"\((\d+)/(\d+)\)\s+Starting attacks against\s+(%s)\s+\((.*?)\)"
+            % BSSID, line, re.I)
+        if match:
+            self.current_bssid, self.current_essid = match.group(3), match.group(4)
+            return self._event(EventType.TARGET, line,
+                               current=int(match.group(1)),
+                               total=int(match.group(2)))
 
-        # ---- Attacking a target ----
-        # "[+] (1/3) Starting attacks against AA:BB:CC:DD:EE:FF (MyNetwork)"
-        m = re.search(
-            r"\[\+\]\s+\((\d+)/(\d+)\)\s+Starting attacks against\s+"
-            r"([0-9a-fA-F:]{17})\s+\((.+)\)", line)
-        if m:
-            self._current_bssid = m.group(3)
-            self._current_essid = m.group(4)
-            self.emit("on_attack", self._current_essid, self._current_bssid)
-            return
+        match = re.search(
+            r"^(.+?)\s+\([-+]?\d+\s*dB\)\s+(WPS|WPA|WEP)\s+(.+?):\s*(.*)$",
+            line, re.I)
+        if match:
+            self.current_essid = match.group(1).strip()
+            phase = ("%s %s" % (match.group(2), match.group(3))).upper()
+            detail = match.group(4).strip()
+            deauth = re.search(r"(?:deauth(?:ing)?).*?(\d+)\s*(?:/|of)\s*(\d+)",
+                               detail, re.I)
+            if "DEAUTH" in phase or deauth:
+                return self._event(
+                    EventType.DEAUTH, line, phase=phase, detail=detail,
+                    current=int(deauth.group(1)) if deauth else None,
+                    total=int(deauth.group(2)) if deauth else None)
+            return self._event(EventType.PHASE, line, phase=phase, detail=detail)
 
-        # ---- WPA Handshake captured ----
-        # "[+] Captured handshake" (includes [DUAL] suffix)
-        if re.search(r"\[\+\]\s+Captured handshake", line):
-            self.emit("on_handshake", self._current_essid)
-            return
+        if re.search(r"\[\+\]\s+Captured.*handshake", line, re.I):
+            return self._event(EventType.HANDSHAKE, line)
+        if re.search(r"\[\+\]\s+Captured\s+PMKID", line, re.I):
+            return self._event(EventType.PMKID, line)
+        if re.search(r"\[\+\]\s+Cracking\s+(?:WPA|WPA/WPA2|WPA3)", line, re.I):
+            return self._event(EventType.CRACKING, line)
 
-        # ---- PMKID captured ----
-        if re.search(r"\[\+\]\s+Captured PMKID", line):
-            self.emit("on_pmkid", self._current_essid)
-            return
+        match = re.search(r"\[\+\]\s+Cracked WPS PIN:\s*(\S+)(?:\s+PSK:\s*(\S+))?",
+                          line, re.I)
+        if match:
+            return self._event(EventType.CRACKED, line,
+                               credential=match.group(2) or match.group(1))
+        match = re.search(
+            r"\[\+\]\s+Cracked (?:WPA(?:/WPA2|3-SAE)?\s+)?(?:Handshake\s+)?(?:Key|PIN):\s*(\S+)",
+            line, re.I)
+        if not match:
+            match = re.search(r"^(?:\[C\])?\s*Key:\s*(\S+)", line, re.I)
+        if match:
+            return self._event(EventType.CRACKED, line,
+                               credential=match.group(1))
 
-        # ---- Attack phase from Color.pattack output ----
-        # Format: "ESSID (-55db) WPS Pixie-Dust: [00:30] Sending M4"
-        m = re.search(
-            r"^(.+?)\s+\([-+]?\d+db\)\s+(\S+)\s+(.+?):\s*(.*)", line)
-        if m:
-            essid = m.group(1)
-            atype = m.group(2)   # "WPS", "WPA", "WEP"
-            name = m.group(3)    # "Pixie-Dust", "Handshake", etc.
-            status = m.group(4)
-            self._current_essid = essid
-            self.emit("on_phase", essid, "%s %s" % (atype, name), status)
-            return
-
-        # ---- Cracked WPS PIN + PSK ----
-        # "[+] Cracked WPS PIN: 12345678 PSK: password"
-        m = re.search(r"\[\+\]\s+Cracked WPS PIN:\s*(\S+)\s+PSK:\s*(\S+)", line)
-        if m:
-            self.emit("on_cracked", self._current_essid, m.group(2))
-            return
-
-        # "[+] Cracked WPS PIN: 12345678" (no PSK)
-        m = re.search(r"\[\+\]\s+Cracked WPS PIN:\s*(\S+)", line)
-        if m:
-            self.emit("on_cracked", self._current_essid, None)
-            return
-
-        # ---- Cracked WPA handshake key ----
-        # "[+] Cracked WPA Handshake Key: password"
-        # "[+] Cracked WPA/WPA2 Handshake Key: password"
-        m = re.search(
-            r"\[\+\]\s+Cracked (?:WPA(?:/WPA2|3-SAE)?\s+)?Handshake\s+Key:\s*(\S+)",
-            line)
-        if m:
-            self.emit("on_cracked", self._current_essid, m.group(1))
-            return
-
-        # ---- PMKID crack: "Key: password" (standalone or after crack message) ----
-        m = re.search(r"^(?:\[C\])?\s*Key:\s*(\S+)", line)
-        if m:
-            self.emit("on_cracked", self._current_essid, m.group(1))
-            return
-
-        # ---- WEP crack: "Cracked WEP Key: xx:xx:xx:xx:xx" ----
-        m = re.search(r"\[\+\]\s+Cracked (?:WPA(?:/WPA2)?\s+)?Handshake\s+Key:\s*(\S+)", line)
-        if m:
-            self.emit("on_cracked", self._current_essid, m.group(1))
-            return
-
-        # ---- Bully/PIN crack ----
-        # "[+] Cracked PIN: 12345678"
-        m = re.search(r"\[\+\]\s+Cracked (?:PIN|Key):\s*(\S+)", line)
-        if m:
-            self.emit("on_cracked", self._current_essid, m.group(1))
-            return
-
-        # ---- Attack failures ----
-        # "[!] WPA handshake capture FAILED: Timed out after 240 seconds"
-        # "[!] Failed: ..."
-        # "[!] Target timeout: ..."
-        if re.search(r"\[\!\]\s+(?:WPA\s+.*FAILED|Failed|Target timeout)", line):
-            self.emit("on_failed", self._current_essid)
-            return
-
-        # ---- Skipping target ----
-        # "[!] Skipping WPA-Handshake attack on ESSID because --wps-only is set"
-        m = re.search(r"\[\!\]\s+Skipping\s.*attack on\s+(\S+)", line)
-        if m:
-            self.emit("on_skipped", m.group(1))
-            return
-
-        # ---- Client discovered ----
-        m = re.search(r"Discovered (?:new )?client:\s*(.+)", line)
-        if m:
-            self.emit("on_client", m.group(1))
-            return
-
-        # ---- Deauth in progress ----
-        if "Deauth" in line and "Deauthing" and not "deauths" in line:
-            self.emit("on_deauth", self._current_essid)
-            return
-
-        # ---- Cracking message ----
-        if re.search(r"\[\+\]\s+Cracking\s+(?:WPA|WPA/WPA2|WPA3)\s+Handshake", line):
-            self.emit("on_cracking", self._current_essid)
-            return
-
-        # Any other non-empty line
-        self.emit("on_message", line[:72])
-
-
-class _NullHandler:
-    def __getattr__(self, item):
-        return lambda *a, **k: None
-
-
-_null_handler = _NullHandler()
+        if re.search(r"\[!\].*(?:FAILED|Failed|Target timeout|No attacks succeeded)",
+                     line, re.I):
+            return self._event(EventType.FAILED, line, detail=line[:48])
+        match = re.search(r"\[!\]\s+Skipping\s+.*?attack on\s+(.+?)(?:\s+because|$)",
+                          line, re.I)
+        if match:
+            return self._event(EventType.SKIPPED, line,
+                               essid=match.group(1).strip())
+        match = re.search(r"Discovered (?:new )?client:\s*(%s|\S+)" % BSSID,
+                          line, re.I)
+        if match:
+            return self._event(EventType.CLIENT, line, detail=match.group(1))
+        match = re.search(r"Deauth(?:ing)?[^0-9]*(\d+)\s*(?:/|of)\s*(\d+)",
+                          line, re.I)
+        if match:
+            return self._event(EventType.DEAUTH, line,
+                               current=int(match.group(1)),
+                               total=int(match.group(2)))
+        return self._event(EventType.MESSAGE, line, detail=line[:48])
