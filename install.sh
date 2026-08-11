@@ -13,10 +13,10 @@ PROJECT_DIR="/home/sun/C"
 USER="${SUDO_USER:-pi}"
 [ "$USER" = "root" ] && USER="pi"
 REPO_URL="https://github.com/kimocoder/wifite2"
+WIFITE_COMMIT="cc3c82f8f2f674b4e355a58f15555a63e25f175a"
 WIFITE_DIR="/opt/wifite2"
-RTL_URL="https://github.com/Mange/rtl8192eu-linux-driver"
 LOG="/tmp/wifibox-install.log"
-TOTAL_STEPS=11
+TOTAL_STEPS=10
 
 say()  { echo -e "\e[1;34m[wifibox]\e[0m $*"; }
 ok()   { echo -e "\e[1;32m     ✓\e[0m $*"; }
@@ -167,18 +167,27 @@ install_packages() {
 
 # ---- [4] wifite2 ----------------------------------------------------------
 install_wifite() {
-    step 4 "Installing wifite2 (kimocoder)..."
+    step 4 "Installing wifite2 (pinned $WIFITE_COMMIT)..."
     if [[ ! -d "$WIFITE_DIR" ]]; then
         _start_spin "cloning wifite2..."
-        if git clone --depth 1 "$REPO_URL" "$WIFITE_DIR" >> "$LOG" 2>&1; then
-            _end_spin "wifite2 cloned"
+        if git clone "$REPO_URL" "$WIFITE_DIR" >> "$LOG" 2>&1; then
+            ( cd "$WIFITE_DIR" && git checkout "$WIFITE_COMMIT" ) >> "$LOG" 2>&1
+            _end_spin "wifite2 cloned @ $WIFITE_COMMIT"
         else
             _end_spin "clone failed"
             fail "git clone wifite2 failed"
             return
         fi
     else
-        ok "wifite2 already cloned at $WIFITE_DIR"
+        _start_spin "verifying wifite2..."
+        local current
+        current=$(cd "$WIFITE_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "?")
+        if [[ "$current" != "${WIFITE_COMMIT:0:7}" ]]; then
+            ( cd "$WIFITE_DIR" && git fetch origin && git checkout "$WIFITE_COMMIT" ) >> "$LOG" 2>&1
+            _end_spin "wifite2 updated @ ${WIFITE_COMMIT:0:7}"
+        else
+            _end_spin "wifite2 already @ ${WIFITE_COMMIT:0:7}"
+        fi
     fi
 
     _start_spin "python3 setup.py install..."
@@ -215,54 +224,10 @@ EOF
     ok "Internal wifi -> wl0"
 }
 
-# ---- [6] rtl8192eu driver (optional) ---------------------------------------
-install_rtl() {
-    step 6 "RTL8192EU driver (optional)..."
-    read -r -p "       Install RTL8192EU USB driver? [y/N] " resp
-    case "$resp" in
-        y|Y|yes|YES)
-            # Auto-detect correct kernel headers package (Pi 5 vs Pi 4)
-            local kver kern_headers
-            kver=$(uname -r)
-            if apt-cache show "linux-headers-$kver" >/dev/null 2>&1; then
-                kern_headers="linux-headers-$kver"
-            elif apt-cache show linux-headers-rpi-v8 >/dev/null 2>&1; then
-                kern_headers="linux-headers-rpi-v8"
-            else
-                kern_headers="raspberrypi-kernel-headers"
-            fi
-            info "Installing: $kern_headers build-essential dkms"
-            apt-get install -y "$kern_headers" build-essential dkms >> "$LOG" 2>&1
-            [[ -d /opt/rtl8192eu ]] && rm -rf /opt/rtl8192eu
 
-            _start_spin "cloning driver..."
-            if git clone --depth 1 "$RTL_URL" /opt/rtl8192eu >> "$LOG" 2>&1; then
-                _end_spin "driver cloned"
-            else
-                _end_spin "clone failed"
-                fail "git clone failed"
-                return
-            fi
-
-            _start_spin "building via dkms (takes a while)..."
-            if ( cd /opt/rtl8192eu && dkms add . && dkms install rtl8192eu/1.0 ) >> "$LOG" 2>&1; then
-                _end_spin "dkms build OK"
-            else
-                _end_spin "dkms build failed"
-                warn "dkms build may have failed (see $LOG)"
-            fi
-
-            echo "blacklist rtl8xxxu" > /etc/modprobe.d/rtl8xxxu.conf
-            echo "options 8192eu rtw_power_mgnt=0 rtw_enusbss=0" > /etc/modprobe.d/8192eu.conf
-            ok "RTL8192EU driver configured"
-            ;;
-        *) warn "Skipping RTL8192EU driver." ;;
-    esac
-}
-
-# ---- [7] sudoers ----------------------------------------------------------
+# ---- [6] sudoers ----------------------------------------------------------
 setup_sudoers() {
-    step 7 "Configuring passwordless sudo..."
+    step 6 "Configuring passwordless sudo..."
     local f="/etc/sudoers.d/wifibox"
     cat > "$f" <<EOF
 $USER ALL=(ALL) NOPASSWD: /usr/sbin/airmon-ng, /usr/sbin/iw, /usr/sbin/iwconfig, /usr/bin/nmcli, /usr/sbin/ip, /usr/bin/macchanger, /usr/sbin/wifite, /usr/bin/wifite, /usr/bin/tailscale
@@ -271,9 +236,9 @@ EOF
     ok "sudoers: $f"
 }
 
-# ---- [8] systemd service --------------------------------------------------
+# ---- [7] systemd service --------------------------------------------------
 setup_service() {
-    step 8 "Installing auto-start service..."
+    step 7 "Installing auto-start service..."
     local f="/etc/systemd/system/wifibox.service"
     cat > "$f" <<EOF
 [Unit]
@@ -298,9 +263,9 @@ EOF
     ok "wifibox.service enabled (auto-start on boot)"
 }
 
-# ---- [9] tailscale ----------------------------------------------------------
+# ---- [8] tailscale ----------------------------------------------------------
 setup_tailscale() {
-    step 9 "Tailscale setup..."
+    step 8 "Tailscale setup..."
     if ! command -v tailscale >/dev/null; then
         warn "tailscale not installed."
         return
@@ -315,9 +280,9 @@ setup_tailscale() {
     fi
 }
 
-# ---- [10] project files ----------------------------------------------------
+# ---- [9] project files ----------------------------------------------------
 setup_project() {
-    step 10 "Setting up project files..."
+    step 9 "Setting up project files..."
     mkdir -p "$PROJECT_DIR"
     if [[ -f "$PROJECT_DIR/main.py" ]]; then
         chown -R "$USER":"$USER" "$PROJECT_DIR" 2>/dev/null || true
@@ -332,9 +297,9 @@ setup_project() {
     fi
 }
 
-# ---- [11] verification ------------------------------------------------------
+# ---- [10] verification ------------------------------------------------------
 verify() {
-    step 11 "Verifying installation..."
+    step 10 "Verifying installation..."
     local pass=0 failc=0
     local check
     declare -A checks=(
@@ -387,7 +352,6 @@ main() {
     install_packages
     install_wifite
     name_internal_wifi
-    install_rtl
     setup_sudoers
     setup_service
     setup_tailscale

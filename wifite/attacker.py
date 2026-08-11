@@ -1,59 +1,102 @@
 # -*- coding: utf-8 -*-
 """Build and run wifite2 attacks.
 
-Builds a command line from config + presets, spawns the process, streams its
-output through OutputParser, and records cracked credentials to cracked.json.
+Splits command building into three modes:
+  target  – hand-picked ESSID/BSSID, no pillage (-p).
+  preset  – Quick Attack: pillage (-p <scan_time>) + preset args, all targets.
+  resume  – --resume-latest, no extra flags.
 """
 import subprocess
 import threading
 import time
 import json
 import os
-import shutil
 
 import config
 from wifite import interface as iface_mod
-from wifite.output import OutputParser, EventType
+from wifite.output import OutputParser, EventType, AttackRequest, AttackResult
 from cracked_store import load_cracked, save_cracked
 
 
 def _which_wifite():
-    for p in config.WIFITE_BIN_CANDIDATES:
-        if os.path.exists(p):
-            return p
-    w = shutil.which("wifite")
-    return w
+    """Return path to a working wifite binary, testing each candidate."""
+    import shutil as _shutil
+    candidates = list(config.WIFITE_BIN_CANDIDATES)
+    w = _shutil.which("wifite")
+    if w and w not in candidates:
+        candidates.append(w)
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            result = subprocess.run(
+                [path, "--version"], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and result.stdout.strip():
+                return path
+        except Exception:
+            continue
+    return None
 
 
 def build_command(iface, preset=None):
-    """Build a wifite argv list from config + optional preset args."""
+    """Backward-compat wrapper – see build_request()."""
+    import copy
+    req = AttackRequest(
+        interface=iface_mod.iface_name(iface),
+        preset=preset,
+        target_essid=config.Runtime.target_essid,
+        target_bssid=config.Runtime.target_bssid,
+        exclusions=list(config.Runtime.excluded_essids),
+        attack_modes=[dict(x) for x in config.attack_modes],
+        timing=[dict(x) for x in config.timing],
+        filters=[dict(x) for x in config.filters],
+        interface_opts=[dict(x) for x in config.interface_opts],
+    )
+    return _build_request_cmd(req)
+
+
+def _build_request_cmd(req):
+    """Build wifite argv from an AttackRequest. Never reads globals."""
     wifite = _which_wifite()
     if not wifite:
         return None
-    name = iface_mod.iface_name(iface)
-    cmd = ["sudo", wifite, "-i", name]
 
-    if preset:
-        cmd.extend(preset.get("args", []))
+    if req.resume_latest:
+        return ["sudo", wifite, "--resume-latest"]
+    if req.clean_sessions:
+        return ["sudo", wifite, "--clean-sessions"]
+
+    cmd = ["sudo", wifite, "-i", req.interface]
+    if req.preset:
+        # Preset controls attack modes + timing. Config only contributes
+        # filters and interface opts to avoid flag duplication.
+        _append_filters(cmd, req.filters)
+        _append_interface_opts(cmd, req.interface_opts)
+        cmd.extend(req.preset.get("args", []))
+    elif req.target_essid or req.target_bssid:
+        cmd.extend(_config_flags(req, pillage=False))
+        if req.target_bssid:
+            cmd += ["-b", req.target_bssid]
+        if req.target_essid:
+            cmd += ["-e", req.target_essid]
     else:
-        cmd.extend(_config_flags())
+        cmd.extend(_config_flags(req, pillage=True))
 
-    # Target / excludes
-    if config.Runtime.target_bssid:
-        cmd += ["-b", config.Runtime.target_bssid]
-    if config.Runtime.target_essid:
-        cmd += ["-e", config.Runtime.target_essid]
-    for ex in config.Runtime.excluded_essids:
+    for ex in req.exclusions:
         cmd += ["-E", ex]
     return cmd
 
 
-def _config_flags():
-    """Translate toggle/cycle options into wifite argv."""
+def _config_flags(req, pillage=True):
+    """Translate a frozen config snapshot into wifite argv.
+
+    pillage=True  → include -p <scan_time> (Quick Attack / Preset).
+    pillage=False → omit -p (selected single target).
+    """
     flags = []
 
     # --- attack modes ---
-    for opt in config.attack_modes:
+    for opt in req.attack_modes:
         kind = opt.get("kind", "bool")
         if kind == "bool":
             state = bool(opt.get("state"))
@@ -68,18 +111,20 @@ def _config_flags():
                 flags.append("--bully")
 
     # --- timing ---
-    for opt in config.timing:
+    for opt in req.timing:
         kind = opt.get("kind", "bool")
         if kind == "bool":
             if opt.get("state") and opt.get("flag"):
                 flags.append(opt["flag"])
             continue
+        if opt["name"] == "Scan Time" and not pillage:
+            continue  # no -p for targeted attacks
         val = opt.get("state")
         if val in ("Off", "All"):
             continue
         _name_to_flag = {
-            "Scan Time": "-p",    "WPS Timeout": "--wps-time",
-            "WPA Timeout": "--wpat",    "Deauth Sec": "--wpadt",
+            "Scan Time": "-p",           "WPS Timeout": "--wps-time",
+            "WPA Timeout": "--wpat",     "Deauth Sec": "--wpadt",
             "PMKID Timeout": "--pmkid-timeout",
             "Num Deauths": "--num-deauths",
         }
@@ -88,11 +133,11 @@ def _config_flags():
             flags.extend([flag, str(val)])
 
     # --- target filters ---
-    for opt in config.filters:
+    for opt in req.filters:
         kind = opt.get("kind", "bool")
         if kind == "bool":
             if opt.get("state"):
-                flags.append(opt["flag"])
+                flags.append(opt.get("flag"))
         elif kind == "cycle":
             val = opt.get("state")
             if val in ("Off", "All"):
@@ -102,7 +147,7 @@ def _config_flags():
                 flags.extend([arg, str(val)])
 
     # --- interface options ---
-    for opt in config.interface_opts:
+    for opt in req.interface_opts:
         kind = opt.get("kind", "bool")
         if kind == "bool":
             if opt.get("state"):
@@ -114,95 +159,142 @@ def _config_flags():
                     flags.append("-mac")
                 elif val == "Vendor":
                     flags.append("--random-mac-vendor")
-
     return flags
+
+
+def _append_filters(cmd, filters):
+    """Emit only the filter-related flags from a config snapshot."""
+    for opt in filters:
+        kind = opt.get("kind", "bool")
+        if kind == "bool" and opt.get("state"):
+            cmd.append(opt["flag"])
+        elif kind == "cycle":
+            val = opt.get("state")
+            if val in ("Off", "All"):
+                continue
+            arg = opt.get("flag")
+            if arg:
+                cmd.extend([arg, str(val)])
+
+
+def _append_interface_opts(cmd, opts):
+    """Emit only interface-level flags from a config snapshot."""
+    for opt in opts:
+        kind = opt.get("kind", "bool")
+        if kind == "bool" and opt.get("state"):
+            cmd.append(opt["flag"])
+        elif kind == "cycle" and opt["name"] == "Random MAC":
+            val = opt.get("state")
+            if val == "Full":
+                cmd.append("-mac")
+            elif val == "Vendor":
+                cmd.append("--random-mac-vendor")
 
 
 def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
                stop_flag=None):
-    """Run the attack. Returns a dict summary.
+    """Run an attack. Returns AttackResult."""
+    req = AttackRequest(
+        interface=iface_mod.iface_name(iface),
+        preset=preset,
+        target_essid=config.Runtime.target_essid,
+        target_bssid=config.Runtime.target_bssid,
+        exclusions=list(config.Runtime.excluded_essids),
+        attack_modes=[dict(x) for x in config.attack_modes],
+        timing=[dict(x) for x in config.timing],
+        filters=[dict(x) for x in config.filters],
+        interface_opts=[dict(x) for x in config.interface_opts],
+    )
+    if preset and preset.get("name") == "resume":
+        req = AttackRequest(interface=iface_mod.iface_name(iface),
+                            resume_latest=True)
 
-    progress_cb(pct, label)  - called as attack progresses
-    status_cb(event)         - raw parser events (dict)
-    """
-    cmd = build_command(iface, preset)
+    cmd = _build_request_cmd(req)
     if not cmd:
-        return {"ok": False, "error": "wifite not found"}
-    iface_name = iface_mod.iface_name(iface)
+        return AttackResult(ok=False, error="wifite not found")
+    iface_name = req.interface
+    start_time = time.time()
 
-    # Ensure monitor mode for attacks
-    if not iface_mod.enable_monitor(iface_name):
-        # wifite can still try; not fatal
-        pass
+    # Monitor mode via context manager
+    monitor = iface_mod.enable_monitor(iface_name)
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, errors="replace")
 
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1, errors="replace")
+        parser = OutputParser()
+        results = {"cracked": [], "handshakes": [], "failed": [], "cancelled": False}
 
-    parser = OutputParser()
-    results = {"cracked": [], "handshakes": [], "failed": []}
-    start = time.time()
+        def _dispatch(events):
+            for ev in events:
+                t = ev.type.value
+                if ev.type == EventType.CRACKED:
+                    psk = ev.credential
+                    results["cracked"].append({"essid": ev.essid, "psk": psk})
+                    if status_cb:
+                        status_cb({"type": t, "essid": ev.essid, "psk": psk})
+                    record_cracked(ev.essid, psk)
+                elif ev.type == EventType.HANDSHAKE:
+                    results["handshakes"].append(ev.essid)
+                    if status_cb:
+                        status_cb({"type": t, "essid": ev.essid})
+                elif ev.type == EventType.FAILED:
+                    results["failed"].append(ev.essid)
+                    if status_cb:
+                        status_cb({"type": t, "essid": ev.essid})
+                elif ev.type == EventType.TARGET:
+                    if status_cb:
+                        status_cb({"type": "attack", "essid": ev.essid,
+                                   "bssid": ev.bssid})
+                elif ev.type in (EventType.PHASE, EventType.CRACKING,
+                                EventType.SCAN, EventType.PMKID,
+                                EventType.SKIPPED, EventType.CLIENT,
+                                EventType.DEAUTH):
+                    if status_cb:
+                        status_cb(ev.as_dict())
+                elif ev.type == EventType.MESSAGE:
+                    if status_cb:
+                        status_cb({"type": "message", "text": ev.detail})
 
-    def _dispatch_events(events):
-        for ev in events:
-            t = ev.type.value
-            if ev.type == EventType.CRACKED:
-                psk = ev.credential
-                results["cracked"].append({"essid": ev.essid, "psk": psk})
-                if status_cb:
-                    status_cb({"type": t, "essid": ev.essid, "psk": psk})
-                record_cracked(ev.essid, psk)
-            elif ev.type == EventType.HANDSHAKE:
-                results["handshakes"].append(ev.essid)
-                if status_cb:
-                    status_cb({"type": t, "essid": ev.essid})
-            elif ev.type == EventType.FAILED:
-                results["failed"].append(ev.essid)
-                if status_cb:
-                    status_cb({"type": t, "essid": ev.essid})
-            elif ev.type == EventType.TARGET:
-                if status_cb:
-                    status_cb({"type": "attack", "essid": ev.essid,
-                               "bssid": ev.bssid})
-            elif ev.type in (EventType.PHASE, EventType.CRACKING,
-                            EventType.SCAN, EventType.PMKID,
-                            EventType.SKIPPED, EventType.CLIENT,
-                            EventType.DEAUTH):
-                if status_cb:
-                    status_cb(ev.as_dict())
-            elif ev.type == EventType.MESSAGE:
-                if status_cb:
-                    status_cb({"type": "message", "text": ev.detail})
+        done = False
+        while not done:
+            if stop_flag and stop_flag.is_set():
+                proc.terminate()
+                time.sleep(1)
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                results["cancelled"] = True
+                break
+            try:
+                line = proc.stdout.readline()
+            except Exception:
+                break
+            if not line:
+                done = True
+                break
+            events = parser.feed(line)
+            if events:
+                _dispatch(events)
+            if progress_cb:
+                progress_cb(None, "elapsed %ds" % int(time.time() - start_time))
+        proc.wait()
 
-    done = False
-    while not done:
-        if stop_flag and stop_flag.is_set():
-            proc.terminate()
-            time.sleep(1)
-            proc.kill()
-            break
-        try:
-            line = proc.stdout.readline()
-        except Exception:  # noqa: BLE001
-            break
-        if not line:
-            done = True
-            break
-        events = parser.feed(line)
-        if events:
-            _dispatch_events(events)
-        elapsed = int(time.time() - start)
-        if progress_cb:
-            progress_cb(None, "elapsed %ds" % elapsed)
-    proc.wait()
+    finally:
+        iface_mod.disable_monitor(iface_name)
 
-    # cleanup monitor mode
-    iface_mod.disable_monitor(iface_name)
-
-    results["ok"] = True
-    results["command"] = " ".join(cmd)
-    return results
-
+    return AttackResult(
+        ok=not results["cancelled"],
+        cancelled=results["cancelled"],
+        exit_code=proc.returncode if 'proc' in dir() else None,
+        cracked=results["cracked"],
+        handshakes=results["handshakes"],
+        failed=results["failed"],
+        command=" ".join(cmd),
+        monitor_iface=monitor,
+        elapsed=time.time() - start_time,
+    )
 
 def record_cracked(essid, psk):
     """Persist a cracked credential to cracked.json (dedup by bssid/essid)."""

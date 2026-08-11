@@ -277,9 +277,9 @@ def run_and_show(preset):
 
     # summary
     pv = ProgressView("DONE")
-    pv.push("OK attack finished" if res.get("ok") else "ERR %s" %
-            res.get("error", "failed"))
-    for c in res.get("cracked", [])[-4:]:
+    pv.push("OK attack finished" if res.ok else "ERR %s" %
+            (res.error or "failed"))
+    for c in res.cracked[-4:]:
         pv.push("OK %s=%s" % (c["essid"], c["psk"]))
     pv.render()
     time.sleep(3)

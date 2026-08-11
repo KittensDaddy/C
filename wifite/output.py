@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Typed, line-oriented parser for wifite2 output."""
+"""Typed contracts for wifite2 attacks: parsing, requests, results."""
 from dataclasses import dataclass, field
 from enum import Enum
 import re
@@ -23,6 +23,38 @@ class EventType(str, Enum):
     DEAUTH = "deauth"
     MESSAGE = "message"
     PROCESS_EXIT = "process_exit"
+
+
+@dataclass(frozen=True)
+class AttackRequest:
+    """What the user asked for — never reads stale globals."""
+    interface: str
+    preset: Optional[Dict[str, Any]] = None
+    target_essid: Optional[str] = None
+    target_bssid: Optional[str] = None
+    exclusions: List[str] = field(default_factory=list)
+    resume_latest: bool = False
+    clean_sessions: bool = False
+    # Frozen snapshot of config options at request time
+    attack_modes: List[Dict[str, Any]] = field(default_factory=list)
+    timing: List[Dict[str, Any]] = field(default_factory=list)
+    filters: List[Dict[str, Any]] = field(default_factory=list)
+    interface_opts: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AttackResult:
+    """What happened — never mutates after creation."""
+    ok: bool
+    error: Optional[str] = None
+    cancelled: bool = False
+    exit_code: Optional[int] = None
+    cracked: List[Dict[str, Any]] = field(default_factory=list)
+    handshakes: List[str] = field(default_factory=list)
+    failed: List[str] = field(default_factory=list)
+    command: Optional[str] = None
+    monitor_iface: Optional[str] = None
+    elapsed: float = 0.0
 
 
 @dataclass(frozen=True)
