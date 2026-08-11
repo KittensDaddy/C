@@ -12,7 +12,7 @@ from PIL import ImageFont
 import config
 from ui import theme
 from ui.screens import (display, font, status_bar, header, box,
-                        AttackStatus, ProgressView, render_splash)
+                        AttackStatus, ProgressView, CommandPreview, render_splash)
 from hardware import battery
 from wifite import interface as iface_mod, scanner as sc, attacker
 from cracked_store import load_cracked, load_settings, save_settings
@@ -254,9 +254,37 @@ def run_and_show(preset):
         status("No external interface")
         time.sleep(1.5)
         return
+    name = iface_mod.iface_name(iface)
+    drv = iface[1] if isinstance(iface, tuple) else ""
+
+    # Pre-flight: type out the exact wifite command for a recheck. KEY1 aborts,
+    # any other press runs immediately; otherwise it auto-advances at 0.5s/line.
+    cmd = attacker.build_command(iface, preset=preset)
+    if cmd:
+        prev = CommandPreview(cmd, mode=(preset.get("name") if preset else "custom"),
+                              iface=name, driver=drv)
+        skipped = False
+        for i in range(1, len(prev) + 1):
+            prev.render(i)
+            e = wait_event(0.5)
+            if e and e["type"] == "key1":
+                return                      # cancel the whole attack
+            if e and e["type"] in ("press", "key3"):
+                skipped = True
+                break
+        prev.render(len(prev))
+        if not skipped:
+            # brief hold so the finished command is readable before launch
+            for _ in range(4):
+                prev.render(len(prev))
+                e = wait_event(0.25)
+                if e and e["type"] == "key1":
+                    return
+                if e and e["type"] in ("press", "key3"):
+                    break
+
     st = AttackStatus("ATTACK")
-    st.set_iface(iface_mod.iface_name(iface),
-                 iface[1] if isinstance(iface, tuple) else "")
+    st.set_iface(name, drv)
     st.render()
     stop = threading.Event()
 

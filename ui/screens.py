@@ -281,6 +281,90 @@ def _to_secs(mmss):
     return int(m.group(1)) * 60 + int(m.group(2)) if m else None
 
 
+def _format_cmd(argv, mode, iface, driver):
+    """Break wifite argv into ordered display rows: (text, kind)."""
+    args = list(argv or [])
+    if args and args[0] == "sudo":
+        args = args[1:]
+    if args and "wifite" in args[0]:
+        args = args[1:]
+    rows = [("wifite", "bin"), ((mode or "custom").upper(), "mode")]
+    if iface:
+        rows.append(("%s %s" % (iface, driver or ""), "iface"))
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-i":                       # iface already shown above
+            i += 2
+            continue
+        if a.startswith("-") and i + 1 < len(args) and not args[i + 1].startswith("-"):
+            rows.append(("%s %s" % (a, args[i + 1]), "arg"))
+            i += 2
+        else:
+            rows.append((a, "arg"))
+            i += 1
+    return rows
+
+
+class CommandPreview:
+    """Punk-style pre-flight page: types out the wifite command line by line
+    so the user can recheck it before the attack fires. Timing is driven by
+    the caller (so a keypress can skip/cancel); this only renders."""
+
+    MAG = (255, 0, 160)
+    CYAN = (0, 235, 215)
+
+    def __init__(self, argv, mode="custom", iface="", driver=""):
+        self.rows = _format_cmd(argv, mode, iface, driver)
+        self._tick = 0
+
+    def __len__(self):
+        return len(self.rows)
+
+    def render(self, upto):
+        self._tick += 1
+        d = display.begin()
+        W, H = config.WIDTH, config.HEIGHT
+        grn = theme.accent_color()
+        d.rectangle((0, 0, W, H), fill=(8, 6, 12))
+        for yy in range(0, H, 3):           # scanline texture
+            d.line((0, yy, W, yy), fill=(15, 11, 22))
+
+        # glitchy header band
+        d.rectangle((0, 0, W, 14), fill=self.MAG)
+        gx = 4 + (self._tick % 2)           # 1px jitter = glitch feel
+        theme.shadowed(d, "RECHECK CMD", (gx, 2), theme.font(10),
+                       color=(0, 0, 0), shadow=(90, 0, 60))
+        if self._tick % 2:                  # blinking REC block
+            d.rectangle((W - 11, 3, W - 4, 10), fill=(0, 0, 0))
+
+        # revealed rows, scrolled so the newest stays visible
+        visible = self.rows[:upto]
+        lh, top = 14, 17
+        max_rows = (H - top - 11) // lh
+        start = max(0, len(visible) - max_rows)
+        y = top
+        for text, kind in visible[start:]:
+            if kind == "bin":
+                theme.shadowed(d, text, (4, y), theme.font(14), color=self.MAG)
+            elif kind == "mode":
+                theme.shadowed(d, "> " + text, (4, y), theme.font(12), color=grn)
+            elif kind == "iface":
+                theme.shadowed(d, "# " + text[:18], (4, y), theme.font(12),
+                               color=self.CYAN)
+            else:
+                theme.shadowed(d, "\xbb " + text[:18], (4, y), theme.font(12),
+                               color=(225, 225, 225))
+            y += lh
+        # blinking block cursor after the last revealed row
+        if self._tick % 2 and y < H - 11:
+            d.rectangle((6, y + 1, 13, y + 9), fill=grn)
+
+        theme.shadowed(d, "PRESS run   K1 back", (3, H - 9), font(),
+                       color=(120, 120, 130))
+        display.show()
+
+
 class ProgressView:
     """Simple full-screen status text view (connect/upload)."""
 
