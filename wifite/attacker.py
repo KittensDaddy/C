@@ -13,7 +13,7 @@ import shutil
 
 import config
 from wifite import interface as iface_mod
-from wifite.output import OutputParser
+from wifite.output import OutputParser, EventType
 from cracked_store import load_cracked, save_cracked
 
 
@@ -146,31 +146,31 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
     def _dispatch_events(events):
         for ev in events:
             t = ev.type.value
-            if ev.type == output.EventType.CRACKED:
+            if ev.type == EventType.CRACKED:
                 psk = ev.credential
                 results["cracked"].append({"essid": ev.essid, "psk": psk})
                 if status_cb:
                     status_cb({"type": t, "essid": ev.essid, "psk": psk})
                 record_cracked(ev.essid, psk)
-            elif ev.type == output.EventType.HANDSHAKE:
+            elif ev.type == EventType.HANDSHAKE:
                 results["handshakes"].append(ev.essid)
                 if status_cb:
                     status_cb({"type": t, "essid": ev.essid})
-            elif ev.type == output.EventType.FAILED:
+            elif ev.type == EventType.FAILED:
                 results["failed"].append(ev.essid)
                 if status_cb:
                     status_cb({"type": t, "essid": ev.essid})
-            elif ev.type == output.EventType.TARGET:
+            elif ev.type == EventType.TARGET:
                 if status_cb:
                     status_cb({"type": "attack", "essid": ev.essid,
                                "bssid": ev.bssid})
-            elif ev.type in (output.EventType.PHASE, output.EventType.CRACKING,
-                            output.EventType.SCAN, output.EventType.PMKID,
-                            output.EventType.SKIPPED, output.EventType.CLIENT,
-                            output.EventType.DEAUTH):
+            elif ev.type in (EventType.PHASE, EventType.CRACKING,
+                            EventType.SCAN, EventType.PMKID,
+                            EventType.SKIPPED, EventType.CLIENT,
+                            EventType.DEAUTH):
                 if status_cb:
                     status_cb(ev.as_dict())
-            elif ev.type == output.EventType.MESSAGE:
+            elif ev.type == EventType.MESSAGE:
                 if status_cb:
                     status_cb({"type": "message", "text": ev.detail})
 

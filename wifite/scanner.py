@@ -133,16 +133,31 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
 
 
 def _parse_nmcli(stdout):
+    """Parse nmcli -t output. BSSID has 6 colon-separated hex bytes."""
     nets = []
+    bssid_re = re.compile(r"((?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}):(-?\d+)")
     for line in stdout.splitlines():
-        parts = line.split(":")
-        if len(parts) >= 3:
-            ssid, bssid, signal = parts[0], parts[1], parts[2]
-            if ssid and bssid and bssid != "--":
-                nets.append({"essid": ssid, "bssid": bssid,
-                             "signal": int(signal or 0) * -1,
-                             "channel": None, "enc": None})
+        m = bssid_re.search(line)
+        if not m:
+            continue
+        bssid = m.group(1).upper()
+        try:
+            dbm = int(m.group(2).split("\\")[0]) * -1
+        except (ValueError, TypeError):
+            dbm = 0
+        ssid = line[:m.start()].rstrip(":").replace("\\:", ":")
+        ssid = re.sub(r"\\$", "", ssid)  # trailing escape from split on colon
+        nets.append({"essid": ssid, "bssid": bssid,
+                     "signal": dbm, "channel": None, "enc": None})
     return nets
+
+
+def _is_hex_byte(s):
+    try:
+        int(s.strip(), 16)
+        return len(s.strip()) == 2
+    except (ValueError, TypeError):
+        return False
 
 
 def sort_by_signal(nets):
