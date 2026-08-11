@@ -23,6 +23,46 @@ _evq = queue.Queue()
 
 def set_button_manager(bm):
     bm.callback = _on_button
+    start_animator()
+
+
+# --------------------------------------------------------------------------
+# Background animator: keeps the status-bar cat running even when a screen is
+# idle (menus only repaint on input). It overlays just the bottom strip, so it
+# works on top of whatever screen is currently shown.
+# --------------------------------------------------------------------------
+_anim_enabled = True
+_anim_thread = None
+
+
+def set_animated(on):
+    """Enable/disable the status-bar animator (off for full-screen views that
+    draw their own bottom, e.g. the command preview)."""
+    global _anim_enabled
+    _anim_enabled = on
+
+
+def _paint_statusbar(d):
+    h, w = config.HEIGHT, config.WIDTH
+    d.rectangle((0, h - 12, w, h), fill=theme.background())
+    status_bar(d)
+
+
+def _animator_loop():
+    while True:
+        if _anim_enabled:
+            try:
+                display.overlay(_paint_statusbar)
+            except Exception:  # noqa: BLE001
+                pass
+        time.sleep(0.08)          # ~12 fps cat
+
+
+def start_animator():
+    global _anim_thread
+    if _anim_thread is None:
+        _anim_thread = threading.Thread(target=_animator_loop, daemon=True)
+        _anim_thread.start()
 
 
 def _on_button(ev):
@@ -271,6 +311,7 @@ def run_and_show(preset):
     cmd = attacker.build_command(iface, preset=preset)
     if cmd:
         flush_events()          # drop the keypress that launched this attack
+        set_animated(False)     # preview owns its bottom row (no status bar)
         prev = CommandPreview(cmd, mode=(preset.get("name") if preset else "custom"),
                               iface=name, driver=drv)
         skipped = False
@@ -278,6 +319,7 @@ def run_and_show(preset):
             prev.render(i)
             e = wait_event(0.5)
             if e and e["type"] == "key1":
+                set_animated(True)
                 return                      # cancel the whole attack
             if e and e["type"] in ("press", "key3"):
                 skipped = True
@@ -289,9 +331,11 @@ def run_and_show(preset):
                 prev.render(len(prev))
                 e = wait_event(0.25)
                 if e and e["type"] == "key1":
+                    set_animated(True)
                     return
                 if e and e["type"] in ("press", "key3"):
                     break
+        set_animated(True)      # attack screen has its own status bar
 
     st = AttackStatus("ATTACK")
     st.set_iface(name, drv)
