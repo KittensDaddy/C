@@ -21,6 +21,19 @@ from hardware.display import display  # noqa: E402
 from hardware.buttons import ButtonManager  # noqa: E402
 import ui.menus as menus  # noqa: E402
 from ui.screens import render_splash  # noqa: E402
+from cracked_store import load_settings  # noqa: E402
+
+
+def _restore_settings():
+    """Restore persistent settings from ~/.local/share/wifi-box/settings.json."""
+    s = load_settings()
+    if not s:
+        return
+    from ui import theme
+    if "theme" in s:
+        theme.set_theme(s["theme"])
+    if "exclusions" in s and isinstance(s["exclusions"], list):
+        config.Runtime.excluded_essids = s["exclusions"]
 
 
 def main():
@@ -33,6 +46,9 @@ def main():
 
     # Give buttons a moment to settle
     time.sleep(0.5)
+
+    # Restore persistent settings
+    _restore_settings()
 
     if buttons.available:
         menus.main_menu()

@@ -15,7 +15,7 @@ from ui.screens import (display, font, status_bar, header, box,
                         AttackStatus, ProgressView, render_splash)
 from hardware import battery
 from wifite import interface as iface_mod, scanner as sc, attacker
-from cracked_store import load_cracked
+from cracked_store import load_cracked, load_settings, save_settings
 from network import connect as net_connect, tailscale, upload as net_upload
 
 _evq = queue.Queue()
@@ -60,6 +60,14 @@ def _move(active, n, ev):
     if ev["type"] == "down":
         return (active + 1) % n
     return active
+
+
+def _persist():
+    """Save theme + exclusions to settings.json (survives reboot)."""
+    s = load_settings()
+    s["theme"] = theme.theme_index()
+    s["exclusions"] = list(config.Runtime.excluded_essids)
+    save_settings(s)
 
 
 # --------------------------------------------------------------------------
@@ -449,6 +457,7 @@ def exclude_menu():
                 config.Runtime.excluded_essids.remove(essid)
             else:
                 config.Runtime.excluded_essids.append(essid)
+            _persist()
             d = display.begin()
             box(d, "EXCLUDE")
             render_list(d, _labels(), active)
@@ -624,7 +633,7 @@ def theme_menu():
             display.show()
         elif ev["type"] == "press":
             theme.set_theme(active)
-            # persist selection
+            _persist()
             d = display.begin()
             box(d, "THEME")
             render_list(d, names, active)

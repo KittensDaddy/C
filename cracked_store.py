@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Read/write cracked.json with corruption-tolerant fallbacks."""
+"""Read/write runtime data with corruption-tolerant fallbacks.
+
+Data lives in ~/.local/share/wifi-box/ (migrated from project root on first
+run). Atomic temp-file replacement, dir mode 0700, cred files 0600.
+"""
 import json
 import os
 import time
@@ -8,52 +12,78 @@ import shutil
 import config
 
 
-def load_cracked():
-    """Return list of cracked entries. Self-heals corrupt files."""
-    path = config.CRACKED_FILE
+def _ensure_dir():
+    try:
+        os.makedirs(config.DATA_DIR, mode=0o700, exist_ok=True)
+    except OSError:
+        pass
+
+
+def _migrate():
+    """One-time: copy legacy files to DATA_DIR if they exist only in root."""
+    _ensure_dir()
+    for legacy, target in [(config.LEGACY_CRACKED, config.CRACKED_FILE),
+                           (config.LEGACY_UPLOAD, config.UPLOAD_STATE_FILE)]:
+        if os.path.exists(legacy) and not os.path.exists(target):
+            try:
+                shutil.copy2(legacy, target)
+            except OSError:
+                pass
+
+
+def _atomic_write(path, data, mode=0o600):
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def _load_json(path):
+    """Return parsed JSON or empty list/dict on failure with self-heal."""
     if not os.path.exists(path):
         return []
     try:
         with open(path, "r") as f:
             data = json.load(f)
-        if isinstance(data, list):
-            return data
-        return []
+        return data if isinstance(data, list) else []
     except (json.JSONDecodeError, ValueError):
-        # corrupt -> try to salvage by truncating at last ']'
         try:
             raw = open(path, "r").read()
             idx = raw.rfind("]")
             if idx != -1:
-                salvaged = json.loads(raw[:idx + 1])
-                if isinstance(salvaged, list):
-                    return salvaged
-        except Exception:  # noqa: BLE001
+                data = json.loads(raw[:idx + 1])
+                if isinstance(data, list):
+                    return data
+        except Exception:
             pass
-        # give up: back up and reset
         try:
             shutil.copy(path, path + ".bak")
-        except Exception:  # noqa: BLE001
+        except OSError:
             pass
-        save_cracked([])
+        _atomic_write(path, [])
         return []
 
 
+# ---------------------------------------------------------------------------
+# cracked.json
+# ---------------------------------------------------------------------------
+def load_cracked():
+    _migrate()
+    return _load_json(config.CRACKED_FILE)
+
+
 def save_cracked(entries):
-    """Atomically write entries to cracked.json."""
-    path = config.CRACKED_FILE
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w") as f:
-            json.dump(entries, f, indent=2)
-        os.replace(tmp, path)
-        return True
-    except Exception:  # noqa: BLE001
-        try:
-            os.remove(tmp)
-        except Exception:  # noqa: BLE001
-            pass
-        return False
+    _ensure_dir()
+    return _atomic_write(config.CRACKED_FILE, entries, mode=0o600)
 
 
 def count_cracked():
@@ -61,34 +91,46 @@ def count_cracked():
 
 
 def new_since(timestamp):
-    """Entries with date > timestamp."""
     return [e for e in load_cracked() if e.get("date", 0) > (timestamp or 0)]
 
 
 # ---------------------------------------------------------------------------
-# Upload state (incremental upload tracking)
+# upload_state.json — incremental-upload bookmark
 # ---------------------------------------------------------------------------
-UPLOAD_STATE_FILE = config.PROJECT_DIR + "/upload_state.json"
-
-
 def load_upload_state():
+    _migrate()
+    path = config.UPLOAD_STATE_FILE
+    if not os.path.exists(path):
+        return {}
     try:
-        with open(UPLOAD_STATE_FILE, "r") as f:
+        with open(path, "r") as f:
             return json.load(f)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {}
 
 
 def save_upload_state(state):
-    tmp = UPLOAD_STATE_FILE + ".tmp"
+    _ensure_dir()
+    return _atomic_write(config.UPLOAD_STATE_FILE, state, mode=0o600)
+
+
+# ---------------------------------------------------------------------------
+# settings.json — theme, presets, exclusions (survives reboot)
+# ---------------------------------------------------------------------------
+def load_settings():
+    path = config.SETTINGS_FILE
+    if not os.path.exists(path):
+        return {}
     try:
-        with open(tmp, "w") as f:
-            json.dump(state, f)
-        os.replace(tmp, UPLOAD_STATE_FILE)
-        return True
-    except Exception:  # noqa: BLE001
-        try:
-            os.remove(tmp)
-        except Exception:  # noqa: BLE001
-            pass
-        return False
+        with open(path, "r") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        return {}
+    return {}
+
+
+def save_settings(data):
+    _ensure_dir()
+    return _atomic_write(config.SETTINGS_FILE, data, mode=0o600)

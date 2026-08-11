@@ -43,11 +43,17 @@ SCROLL_FAST_SPEED = 0.03        # seconds between steps when held
 SCROLL_SLOW_SPEED = 0.10
 
 # ---------------------------------------------------------------------------
-# Files & paths
+# Files & paths — runtime data lives in ~/.local/share/wifi-box/
+# (migrated from PROJECT_DIR on first run if old files exist)
 # ---------------------------------------------------------------------------
 PROJECT_DIR = "/home/sun/C"
-CRACKED_FILE   = PROJECT_DIR + "/cracked.json"
+DATA_DIR      = "/home/sun/.local/share/wifi-box"
+CRACKED_FILE   = DATA_DIR + "/cracked.json"
+SETTINGS_FILE  = DATA_DIR + "/settings.json"
+LEGACY_CRACKED = PROJECT_DIR + "/cracked.json"       # migrate → DATA_DIR
+LEGACY_UPLOAD   = PROJECT_DIR + "/upload_state.json"  # migrate → DATA_DIR
 HANDSHAKE_REMOTE_DIR = "/home/sun/handshake"
+UPLOAD_STATE_FILE = DATA_DIR + "/upload_state.json"
 LOG_FILE = PROJECT_DIR + "/wifibox.log"
 
 # Wifite binary lookup order
