@@ -53,15 +53,19 @@ check_platform() {
 
 # ---- [2] hardware ---------------------------------------------------------
 enable_hardware() {
-    say "Enabling SPI and I2C..."
+    say "Enabling SPI, I2C, and LCD GPIO pull-ups..."
     local conf=""
     for c in /boot/firmware/config.txt /boot/config.txt; do
         [[ -f "$c" ]] && conf="$c" && break
     done
     if [[ -n "$conf" ]]; then
+        # SPI + I2C
         grep -q "^dtparam=spi=on" "$conf" || echo "dtparam=spi=on" >> "$conf"
         grep -q "^dtparam=i2c_arm=on" "$conf" || echo "dtparam=i2c_arm=on" >> "$conf"
-        ok "SPI/I2C enabled in $conf"
+        # Waveshare 1.44" LCD HAT — enable pull-ups on joystick + button pins
+        local gpio_line="gpio=6,19,5,26,13,21,20,16=pu"
+        grep -q "^gpio=6,19" "$conf" || echo "$gpio_line" >> "$conf"
+        ok "SPI/I2C/LCD-GPIO pull-ups enabled in $conf"
     else
         warn "Could not find config.txt; enable SPI/I2C manually via raspi-config."
     fi
