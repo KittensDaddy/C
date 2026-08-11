@@ -83,27 +83,85 @@ class AttackEvent:
 
     @property
     def compact(self) -> str:
-        name = (self.essid or "?")[:13]
+        name = (self.essid or "?")[:15]
+        if self.type == EventType.SCAN:
+            return "SCAN %d/%d" % (self.targets or 0, self.clients or 0)
+        if self.type == EventType.TARGET:
+            if self.current and self.total:
+                return ">> %s (%d/%d)" % (name, self.current, self.total)
+            return "AP %s" % name
         if self.type == EventType.HANDSHAKE:
             return "HS %s" % name
         if self.type == EventType.PMKID:
-            return "PMKID FOUND"
+            return "PMKID %s" % name
+        if self.type == EventType.CRACKING:
+            return "CRACK %s..." % name
         if self.type == EventType.CRACKED:
-            return "KEY %s" % name
-        if self.type == EventType.DEAUTH:
-            if self.current is not None and self.total is not None:
-                return "WPA DEAUTH %d/%d" % (self.current, self.total)
-            return "WPA DEAUTH"
+            cred = self.credential or "?"
+            return "KEY %s=%s" % (name, cred[:10])
         if self.type == EventType.FAILED:
             return "FAIL %s" % name
         if self.type == EventType.SKIPPED:
             return "SKIP %s" % name
+        if self.type == EventType.CLIENT:
+            return "STA %s" % (self.detail or "?")
+        if self.type == EventType.DEAUTH:
+            if self.current and self.total:
+                return "DEAUTH %d/%d %s" % (self.current, self.total, name)
+            return "DEAUTH %s" % name
         if self.type == EventType.PHASE:
-            return (self.phase or self.detail or "ATTACK")[:20]
-        if self.type == EventType.SCAN:
-            return "SCAN %d AP / %d STA" % (self.targets or 0,
-                                            self.clients or 0)
-        return (self.detail or self.raw or self.type.value.upper())[:20]
+            return self._phase_compact()
+        return (self.detail or self.raw or "")[:20]
+
+    def _phase_compact(self) -> str:
+        """Minimal single-line phase description for tiny LCD."""
+        name = (self.essid or "?")[:10]
+        phase = (self.phase or "").upper()
+        detail = self.detail or ""
+        # WPS Pixie-Dust: "[00:25] Sending M4" → "PIXIE M4 25s"
+        if "PIXIE" in phase:
+            m = re.search(r"\[(\d+):(\d+)\]", detail)
+            if m:
+                mm, ss = m.group(1), m.group(2)
+                rest = re.sub(r"\[[\d:]+\]\s*", "", detail).strip()[:8].rstrip()
+                return "PIXIE %s %s:%s" % (rest, mm, ss)
+            return "PIXIE %s" % (detail[:10]) if detail else "PIXIE %s" % name
+        # WPS PIN: "[01:23] Trying PIN" → "PIN TRY 1:23"
+        if "WPS" in phase and "PIN" in phase:
+            m = re.search(r"\[(\d+):(\d+)\]", detail)
+            if m:
+                return "PIN %s %s:%s" % (detail[:6].strip(" []"), m.group(1), m.group(2))
+            return "PIN %s" % (detail[:10]) if detail else "PIN %s" % name
+        # WPA Handshake: "Listening. (clients:2, deauth:yes, timeout:03:42)"
+        if "HANDSHAKE" in phase or ("WPA" in phase and "DEAUTH" not in phase):
+            m_c = re.search(r"clients[:=](\d+)", detail, re.I)
+            m_t = re.search(r"timeout[:=]\s*(\d+):(\d+)", detail, re.I)
+            c = m_c.group(1) if m_c else "?"
+            ts = "%s:%s" % (m_t.group(1), m_t.group(2)) if m_t else "?"
+            return "HS C:%s %s %s" % (c, ts, name)[:21]
+        # Deauth messages: "Deauthing AA:BB:CC (5/10)" → "DEAUTH 5/10"
+        if "DEAUTH" in phase:
+            m = re.search(r"(\d+)\s*(?:/|of)\s*(\d+)", detail)
+            if m:
+                return "DEAUTH %s/%s %s" % (m.group(1), m.group(2), name)
+            return "DEAUTH %s" % name
+        # Cracking: "Running aircrack-ng with rockyou.txt (1/1)"
+        if "CRACK" in phase:
+            return "CRACK %s" % name
+        # Generic phase: squeeze the identifier
+        short = phase.replace("WPS ", "").replace("WPA ", "").replace("HANDSHAKE", "HS")
+        return "%s %s %s" % (short[:10], name, detail[:8])
+
+    @property
+    def compact_detail(self) -> str:
+        """Short detail line complementing compact (if needed)."""
+        if self.type == EventType.PHASE:
+            return (self.detail or "")[:21]
+        if self.type == EventType.CRACKED:
+            return ""
+        if self.type == EventType.CLIENT:
+            return ""
+        return (self.detail or "")[:21]
 
 
 def strip_ansi(value: Optional[str]) -> str:
