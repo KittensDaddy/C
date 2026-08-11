@@ -41,6 +41,9 @@ DEBOUNCE_TIME = 0.15
 SCROLL_HOLD_TIME = 2.0          # hold a scroll key before it accelerates
 SCROLL_FAST_SPEED = 0.03        # seconds between steps when held
 SCROLL_SLOW_SPEED = 0.10
+# Auto-repeat feel for held navigation keys (action keys never repeat).
+REPEAT_DELAY = 0.45            # hold this long before auto-repeat starts
+REPEAT_RATE  = 0.22           # seconds between repeats once it starts
 
 # ---------------------------------------------------------------------------
 # Files & paths — runtime data lives in ~/.local/share/wifi-box/
