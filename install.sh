@@ -44,10 +44,10 @@ check_platform() {
         fail "apt-get not found. This installer targets Debian/Raspberry Pi OS."
         exit 1
     fi
-    if grep -qi "bookworm" /etc/os-release 2>/dev/null; then
-        ok "OS: Bookworm"
+    if grep -qiE "(bookworm|trixie)" /etc/os-release 2>/dev/null; then
+        ok "OS: supported (Bookworm/Trixie)"
     else
-        warn "OS may not be Bookworm (recommended)."
+        warn "Unsupported OS. Bookworm or Trixie recommended."
     fi
 }
 
@@ -95,8 +95,12 @@ install_wifite() {
         git clone --depth 1 "$REPO_URL" "$WIFITE_DIR" >> "$LOG" 2>&1 || \
             { fail "git clone wifite2 failed"; return; }
     fi
+    # Detect pip --break-system-packages flag (PEP 668, Python 3.11+)
+    local pip_break=""
+    python3 -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages' && \
+        pip_break="--break-system-packages"
     ( cd "$WIFITE_DIR" && \
-      python3 -m pip install -e . --break-system-packages ) >> "$LOG" 2>&1 || \
+      python3 -m pip install -e . $pip_break 2>&1 ) >> "$LOG" 2>&1 || \
         { warn "pip install wifite2 failed; ensure wifite is in PATH"; }
     command -v wifite >/dev/null && ok "wifite2 ready" || warn "wifite not found in PATH"
 }
