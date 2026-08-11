@@ -199,8 +199,9 @@ def main_menu():
 # --------------------------------------------------------------------------
 # Scan & Attack
 # --------------------------------------------------------------------------
-def _scan_with_progress(iface_name, title="SCAN"):
+def _scan_with_progress(iface_name, driver="", title="SCAN"):
     """Run a scan in the background and render a live countdown + found count.
+    Shows the interface + driver so you can confirm the external adapter is used.
     Returns the sorted network list."""
     duration = config.INTERACTIVE_SCAN_SECONDS
     state = {"n": 0, "done": False, "nets": []}
@@ -217,7 +218,8 @@ def _scan_with_progress(iface_name, title="SCAN"):
         left = max(0.0, duration - (time.time() - start))
         d = display.begin()
         box(d, title)
-        theme.shadowed(d, ("scan %s" % iface_name)[:20], (3, 16), font())
+        theme.shadowed(d, ("%s %s" % (iface_name, driver)).strip()[:20],
+                       (3, 16), font(), color=theme.highlight_color())
         theme.shadowed(d, "found %d nets" % state["n"], (3, 28), font(),
                        color=theme.accent_color())
         theme.progress_bar(d, 3, 44, config.WIDTH - 6, 5,
@@ -236,7 +238,8 @@ def scan_attack():
         return
     config.Runtime.selected_interface = iface
 
-    nets = _scan_with_progress(iface[0], "SCAN")
+    nets = _scan_with_progress(iface[0],
+                               iface[1] if isinstance(iface, tuple) else "", "SCAN")
 
     if not nets:
         pv.push("ERR no networks found")
@@ -532,7 +535,8 @@ def exclude_menu():
         status("No external interface")
         time.sleep(1.5)
         return
-    nets = _scan_with_progress(iface[0], "EXCLUDE")
+    nets = _scan_with_progress(iface[0],
+                               iface[1] if isinstance(iface, tuple) else "", "EXCLUDE")
     if not nets:
         pv.push("ERR no networks")
         pv.render()
