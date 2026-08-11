@@ -13,6 +13,7 @@ import json
 import os
 import re
 import select
+import shutil
 
 import config
 from wifite import interface as iface_mod
@@ -244,8 +245,12 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
     iface_name = req.interface
     start_time = time.time()
 
-    # Monitor mode via context manager
-    monitor = iface_mod.enable_monitor(iface_name)
+    # Don't pre-enable monitor mode (airmon-ng is slow and wifite does it on its
+    # -i iface anyway). Just release the external adapter from NetworkManager so
+    # wifite starts scanning fast without needing --kill (which would also drop
+    # the internal wl0 used for uploads). The internal iface is left alone.
+    _nm_set_managed(iface_name, False)
+    config.Runtime.monitor_iface = iface_name
     try:
         # Binary + unbuffered: wifite redraws its live scan/attack line with
         # carriage returns and no newline, so readline() would block until the
@@ -333,7 +338,8 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
         proc.wait()
 
     finally:
-        iface_mod.disable_monitor(iface_name)
+        iface_mod.disable_monitor(iface_name)   # restore managed mode
+        _nm_set_managed(iface_name, True)        # hand the adapter back to NM
 
     return AttackResult(
         ok=not results["cancelled"],
@@ -343,9 +349,21 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
         handshakes=results["handshakes"],
         failed=results["failed"],
         command=" ".join(cmd),
-        monitor_iface=monitor,
+        monitor_iface=iface_name,
         elapsed=time.time() - start_time,
     )
+
+
+def _nm_set_managed(iface_name, managed):
+    """Tell NetworkManager to (not) manage an interface. Best-effort/no-op if
+    nmcli is absent or the iface isn't NM-managed."""
+    nmcli = shutil.which("nmcli") or "/usr/bin/nmcli"
+    try:
+        subprocess.run([nmcli, "device", "set", iface_name, "managed",
+                        "yes" if managed else "no"],
+                       capture_output=True, timeout=8)
+    except Exception:  # noqa: BLE001
+        pass
 
 def record_cracked(essid, psk):
     """Persist a cracked credential to cracked.json (dedup by bssid/essid)."""

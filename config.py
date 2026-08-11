@@ -145,7 +145,7 @@ DEFAULT_FILTERS = [
 DEFAULT_INTERFACE_OPTS = [
     {"name": "Random MAC",   "kind": "cycle", "state": "Off", "values": ["Off", "Full", "Vendor"], "flag": "--mac"},
     {"name": "Dual Interface","kind": "bool", "state": False, "flag": "--dual-interface"},
-    {"name": "Kill Conflicts","kind": "bool", "state": True,  "flag": "--kill"},
+    {"name": "Kill Conflicts","kind": "bool", "state": False, "flag": "--kill"},
     {"name": "Daemon",       "kind": "bool",  "state": False, "flag": "--daemon"},
     {"name": "Use Hcxdump",  "kind": "bool",  "state": False, "flag": "--hcxdump"},
 ]
