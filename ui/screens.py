@@ -59,138 +59,166 @@ def render_splash():
 
 
 class AttackStatus:
-    """Compact live attack screen for tiny LCD."""
+    """Trophy-first live attack screen for tiny LCD.
+
+    Layout (128x128, ~21 chars/line):
+        overall : ATK 3/12  +2 H:4        target index, cracked/handshake counts
+        current : > HomeNet WPS 0:38      essid + phase + live countdown
+        trophies: cracked (persistent) -> handshakes -> collapsed "- N failed"
+    """
 
     def __init__(self, title="ATTACK"):
         self.title = title
-        self.current = ""
-        self.detail = ""
-        self.results = []      # list of (essid, status, compact_str)
-        self.percent = 2
+        self.target_cur = 0
+        self.target_total = 0
+        self.cur_essid = ""
+        self.cur_phase = ""       # short label: SCAN / WPS / PIXIE / PIN / HS / DEAUTH / CRACK
+        self.cur_timeout = ""     # "0:38" countdown pulled from wifite, if any
+        self.results = []         # list of [essid, status, cred]
         self.start_time = time.time()
 
+    # -- event intake -----------------------------------------------------
     def handle_event(self, ev):
         t = ev.get("type", "")
-        essid = ev.get("essid", "")
+        essid = ev.get("essid", "") or ""
         if t == "scan":
-            self.current = "SCAN %d/%d" % (ev.get("targets", 0),
-                                           ev.get("clients", 0))
-            self.percent = 3
+            self.cur_essid = ""
+            self.cur_phase = "SCAN %d/%d" % (ev.get("targets", 0),
+                                             ev.get("clients", 0))
+            self.cur_timeout = ""
         elif t == "attack":
-            self.current = ">> %s" % (essid or "?")[:12]
-            self._set(essid, "phase")
-            self.percent = 10
+            self.cur_essid = essid
+            self.cur_phase = "start"
+            self.cur_timeout = ""
+            if ev.get("current") and ev.get("total"):
+                self.target_cur = ev["current"]
+                self.target_total = ev["total"]
+        elif t == "phase":
+            if essid:
+                self.cur_essid = essid
+            self.cur_phase = _phase_label(ev.get("phase", ""), ev.get("detail", ""))
+            self.cur_timeout = _timeout(ev.get("detail", ""))
+        elif t == "deauth":
+            self.cur_phase = "DEAUTH %s/%s" % (ev.get("current", "?"),
+                                               ev.get("total", "?"))
+            self.cur_timeout = ""
+        elif t == "cracking":
+            self.cur_phase = "CRACK"
+            self.cur_timeout = ""
         elif t == "handshake":
             self._set(essid, "handshake")
-            self.detail = "HS %s" % (essid or "?")[:12]
-            self.percent = 50
         elif t == "pmkid":
-            self._set(essid, "handshake")
-            self.detail = "PMKID %s" % (essid or "?")[:12]
-            self.percent = 50
+            self._set(essid, "handshake", "pmkid")
         elif t == "cracked":
-            psk = ev.get("psk", "?")
-            self._set(essid, "cracked", "%s=%s" % (essid or "?", str(psk)[:10]))
-            self.detail = "KEY %s" % str(psk)[:12]
-            self.percent = 100
+            self._set(essid, "cracked", str(ev.get("psk", "?")))
         elif t == "failed":
             self._set(essid, "failed")
-            self.detail = "FAIL %s" % (essid or "?")[:12]
-            self.percent = 20
         elif t == "skipped":
             self._set(essid, "skipped")
-            self.detail = "SKIP %s" % (essid or "?")[:12]
-        elif t == "phase":
-            phase = ev.get("phase", "")
-            detail = ev.get("detail", "")
-            if essid:
-                self.current = "%s %s" % (essid or "?", _compact_phase(phase, detail))[:20]
-                self._set(essid, "phase")
-            self.percent = max(self.percent, 5)
-        elif t == "message":
-            text = ev.get("text", "")
-            if text and len(text) < 40 and not text.startswith("elapsed"):
-                self.detail = text[:21]
-        elif t == "cracking":
-            self._set(essid, "cracking")
-            self.detail = "CRACK %s" % (essid or "?")[:12]
-            self.percent = max(self.percent, 60)
 
-    def _set(self, essid, status, compact_str=None):
+    def _set(self, essid, status, cred=None):
         if not essid:
             return
         for row in self.results:
             if row[0] == essid:
-                row[1] = status
-                if compact_str:
-                    row[2] = compact_str
+                # Never let a later "failed" overwrite a real capture.
+                rank = {"failed": 0, "skipped": 0, "handshake": 1, "cracked": 2}
+                if rank.get(status, 0) >= rank.get(row[1], 0):
+                    row[1] = status
+                if cred:
+                    row[2] = cred
                 return
-        self.results.append([essid, status, compact_str])
+        self.results.append([essid, status, cred])
 
     def summary(self):
         c = sum(1 for r in self.results if r[1] == "cracked")
         h = sum(1 for r in self.results if r[1] == "handshake")
-        f = sum(1 for r in self.results if r[1] == "failed")
+        f = sum(1 for r in self.results if r[1] in ("failed", "skipped"))
         return c, h, f
 
+    # -- rendering --------------------------------------------------------
     def render(self):
         d = display.begin()
         box(d, self.title)
-        elapsed = int(time.time() - self.start_time)
-        # line 1: current target/phase + elapsed
-        theme.shadowed(d, "%s %ds" % (self.current[:16], elapsed),
-                       (3, 15), font(), color=theme.palette()["text"])
-        # line 2: progress bar
-        theme.progress_bar(d, 3, 28, config.WIDTH - 6, 4,
-                           max(2, self.percent))
-        # line 3: latest detail
-        if self.detail:
-            theme.shadowed(d, self.detail[:21], (3, 36), font(),
-                           color=theme.accent_color())
-        # line 4: counters
         c, h, f = self.summary()
-        theme.shadowed(d, "G:%d H:%d F:%d" % (c, h, f), (3, 48), font())
-        # remaining lines: recent results
-        y = 60
-        for essid, status, desc in self.results[-4:]:
-            if y > config.HEIGHT - 12:
+
+        # line 1: overall progress + trophy counts
+        if self.target_total:
+            head = "ATK %d/%d  +%d H:%d" % (self.target_cur, self.target_total, c, h)
+        else:
+            head = "ATK  +%d H:%d" % (c, h)
+        theme.shadowed(d, head[:21], (3, 15), font(),
+                       color=theme.highlight_color())
+
+        # line 2: current target + phase + live countdown
+        theme.shadowed(d, self._current_line()[:21], (3, 27), font(),
+                       color=theme.accent_color())
+        d.line((0, 38, config.WIDTH, 38), fill=theme.palette()["text"])
+
+        # trophy list: cracked (persistent) then handshakes, failures collapsed
+        cracked = [r for r in self.results if r[1] == "cracked"]
+        shakes = [r for r in self.results if r[1] == "handshake"]
+        y = 41
+        bottom = config.HEIGHT - 11
+        for essid, _, cred in cracked:
+            if y > bottom:
                 break
-            glyph = {"cracked": "+", "handshake": "H",
-                     "failed": "-", "skipped": "~",
-                     "phase": ">", "cracking": "C"}.get(status, ".")
-            col = theme.accent_color() if status in ("cracked", "handshake") \
-                else theme.highlight_color() if status == "failed" \
-                else theme.palette()["text"]
-            text = desc or ("%s %s" % (glyph, essid))
-            theme.shadowed(d, text[:21], (3, y), font(), color=col)
+            text = "+%s %s" % ((essid or "?")[:9], (cred or "")[:9])
+            theme.shadowed(d, text[:21], (3, y), font(), color=theme.accent_color())
             y += 10
+        for essid, _, _ in shakes:
+            if y > bottom - (10 if f else 0):
+                break
+            theme.shadowed(d, ("H %s" % (essid or "?"))[:21], (3, y), font(),
+                           color=theme.palette()["text"])
+            y += 10
+        if f and y <= bottom:
+            theme.shadowed(d, "- %d failed" % f, (3, y), font(),
+                           color=theme.highlight_color())
         display.show()
 
+    def _current_line(self):
+        if not self.cur_essid and not self.cur_phase:
+            return "> starting %ds" % int(time.time() - self.start_time)
+        parts = [">"]
+        if self.cur_essid:
+            parts.append(self.cur_essid[:9])
+        if self.cur_phase:
+            parts.append(self.cur_phase)
+        line = " ".join(parts)
+        if self.cur_timeout:
+            line += " " + self.cur_timeout
+        return line
 
-def _compact_phase(phase, detail):
-    phase_u = (phase or "").upper()
-    detail = detail or ""
-    if "PIXIE" in phase_u:
-        m = re.search(r"(\d+):(\d+)", detail)
-        if m:
-            return "PIXIE %s:%s" % (m.group(1), m.group(2))
-        return "PIXIE %s" % detail[:6]
-    if "PIN" in phase_u:
-        m = re.search(r"(\d+):(\d+)", detail)
-        if m:
-            return "PIN %s:%s" % (m.group(1), m.group(2))
-        return "PIN %s" % detail[:6]
-    if "HANDSHAKE" in phase_u:
-        m = re.search(r"clients[:=](\d+)", detail, re.I)
-        if m:
-            return "HS C:%s" % m.group(1)
-        return "HS"
-    if "DEAUTH" in phase_u:
-        m = re.search(r"(\d+)\s*(?:/|of)\s*(\d+)", detail)
-        if m:
-            return "DEAUTH %s/%s" % (m.group(1), m.group(2))
+
+def _phase_label(phase, detail):
+    """Short human phase tag for the current-attack line."""
+    p = (phase or "").upper()
+    if "PIXIE" in p:
+        return "PIXIE"
+    if "PIN" in p:
+        return "PIN"
+    if "HANDSHAKE" in p or ("WPA" in p and "DEAUTH" not in p):
+        m = re.search(r"clients[:=](\d+)", detail or "", re.I)
+        return "HS c%s" % m.group(1) if m else "HS"
+    if "DEAUTH" in p:
         return "DEAUTH"
-    return phase_u[:12]
+    if "CRACK" in p:
+        return "CRACK"
+    return (p.replace("WPS ", "").replace("WPA ", "") or "atk")[:6]
+
+
+def _timeout(detail):
+    """Pull a live countdown (m:ss) out of wifite's phase detail, if present."""
+    detail = detail or ""
+    m = re.search(r"timeout[:=]\s*(\d+):(\d+)", detail, re.I)
+    if not m:
+        m = re.search(r"\[(\d+):(\d+)\]", detail)      # WPS "[00:38] Sending M5"
+    if not m:
+        m = re.search(r"\b(\d+):(\d{2})\b", detail)
+    if not m:
+        return ""
+    return "%d:%02d" % (int(m.group(1)), int(m.group(2)))
 
 
 class ProgressView:

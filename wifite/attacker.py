@@ -245,7 +245,8 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
                 elif ev.type == EventType.TARGET:
                     if status_cb:
                         status_cb({"type": "attack", "essid": ev.essid,
-                                   "bssid": ev.bssid})
+                                   "bssid": ev.bssid,
+                                   "current": ev.current, "total": ev.total})
                 elif ev.type in (EventType.PHASE, EventType.CRACKING,
                                 EventType.SCAN, EventType.PMKID,
                                 EventType.SKIPPED, EventType.CLIENT,
