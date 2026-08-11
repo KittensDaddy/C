@@ -142,7 +142,7 @@ install_packages() {
     local pkgs=(
         python3 python3-pip python3-setuptools
         python3-pil python3-numpy
-        python3-lgpio python3-spidev python3-smbus2
+        python3-lgpio python3-gpiozero python3-spidev python3-smbus2
         aircrack-ng reaver bully hashcat hcxtools
         tshark macchanger wireless-tools iw iproute2
         network-manager dnsutils curl git

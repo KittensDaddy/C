@@ -176,3 +176,123 @@ timing         = [dict(x) for x in DEFAULT_TIMING]
 filters        = [dict(x) for x in DEFAULT_FILTERS]
 interface_opts = [dict(x) for x in DEFAULT_INTERFACE_OPTS]
 presets        = list(PRESETS)
+
+
+# ---------------------------------------------------------------------------
+# RaspberryPi hardware class (used by LCD_1in44.py for SPI + GPIO backlight)
+# ---------------------------------------------------------------------------
+import time as _time
+import logging
+
+try:
+    import spidev as _spidev
+except ImportError:
+    _spidev = None
+
+try:
+    import numpy as _np
+except ImportError:
+    _np = None
+
+try:
+    from gpiozero import DigitalOutputDevice, DigitalInputDevice, PWMOutputDevice as _PWMOutputDevice
+    _have_gpiozero = True
+except ImportError:
+    _have_gpiozero = False
+
+
+class RaspberryPi:
+    """GPIO/SPI hardware layer required by LCD_1in44.py."""
+
+    def __init__(self, spi=None, spi_freq=40000000,
+                 rst=27, dc=25, bl=24, bl_freq=1000,
+                 i2c=None, i2c_freq=100000):
+        self.np = _np
+        self.INPUT = False
+        self.OUTPUT = True
+        self.SPEED = spi_freq
+        self.BL_freq = bl_freq
+
+        if spi is None and _spidev is not None:
+            try:
+                spi = _spidev.SpiDev(0, 0)
+            except Exception:
+                spi = None
+        self.SPI = spi
+
+        if _have_gpiozero:
+            self.GPIO_RST_PIN = self.gpio_mode(rst, self.OUTPUT)
+            self.GPIO_DC_PIN = self.gpio_mode(dc, self.OUTPUT)
+            self.GPIO_BL_PIN = self.gpio_pwm(bl)
+        else:
+            self.GPIO_RST_PIN = _DummyPin()
+            self.GPIO_DC_PIN = _DummyPin()
+            self.GPIO_BL_PIN = _DummyPin()
+        self.bl_DutyCycle(0)
+
+        if self.SPI is not None:
+            self.SPI.max_speed_hz = spi_freq
+            self.SPI.mode = 0b00
+
+    def gpio_mode(self, Pin, Mode, pull_up=None, active_state=True):
+        if Mode:
+            return DigitalOutputDevice(Pin, active_high=True, initial_value=False)
+        else:
+            return DigitalInputDevice(Pin, pull_up=pull_up, active_state=active_state)
+
+    def digital_write(self, Pin, value):
+        if value:
+            Pin.on()
+        else:
+            Pin.off()
+
+    def digital_read(self, Pin):
+        return Pin.value
+
+    def delay_ms(self, delaytime):
+        _time.sleep(delaytime / 1000.0)
+
+    def gpio_pwm(self, Pin):
+        if _have_gpiozero:
+            return _PWMOutputDevice(Pin, frequency=self.BL_freq)
+        return _DummyPin()
+
+    def spi_writebyte(self, data):
+        if self.SPI is not None:
+            self.SPI.writebytes(data)
+
+    def bl_DutyCycle(self, duty):
+        self.GPIO_BL_PIN.value = duty / 100.0
+
+    def bl_Frequency(self, freq):
+        self.GPIO_BL_PIN.frequency = freq
+
+    def module_init(self):
+        if self.SPI is not None:
+            self.SPI.max_speed_hz = self.SPEED
+            self.SPI.mode = 0b00
+        return 0
+
+    def module_exit(self):
+        logging.debug("spi end")
+        if self.SPI is not None:
+            self.SPI.close()
+        logging.debug("gpio cleanup...")
+        self.digital_write(self.GPIO_RST_PIN, 1)
+        self.digital_write(self.GPIO_DC_PIN, 0)
+        self.GPIO_BL_PIN.close()
+        _time.sleep(0.001)
+
+
+class _DummyPin:
+    def on(self): pass
+    def off(self): pass
+    @property
+    def value(self): return 0
+    @value.setter
+    def value(self, v): pass
+    @property
+    def frequency(self): return 1000
+    @frequency.setter
+    def frequency(self, v): pass
+    def close(self): pass
