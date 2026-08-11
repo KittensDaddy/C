@@ -242,8 +242,9 @@ def scan_attack():
                                iface[1] if isinstance(iface, tuple) else "", "SCAN")
 
     if not nets:
-        pv.push("ERR no networks found")
-        pv.render()
+        ev = ProgressView("SCAN")
+        ev.push("ERR no networks found")
+        ev.render()
         time.sleep(2)
         return
 
@@ -538,8 +539,9 @@ def exclude_menu():
     nets = _scan_with_progress(iface[0],
                                iface[1] if isinstance(iface, tuple) else "", "EXCLUDE")
     if not nets:
-        pv.push("ERR no networks")
-        pv.render()
+        ev = ProgressView("EXCLUDE")
+        ev.push("ERR no networks")
+        ev.render()
         time.sleep(2)
         return
     labels = [n["essid"] for n in nets]
