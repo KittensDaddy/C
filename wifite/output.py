@@ -32,6 +32,7 @@ class AttackRequest:
     preset: Optional[Dict[str, Any]] = None
     target_essid: Optional[str] = None
     target_bssid: Optional[str] = None
+    target_channel: Optional[str] = None
     exclusions: List[str] = field(default_factory=list)
     resume_latest: bool = False
     clean_sessions: bool = False

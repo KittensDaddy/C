@@ -49,6 +49,7 @@ def build_command(iface, preset=None):
         preset=preset,
         target_essid=config.Runtime.target_essid,
         target_bssid=config.Runtime.target_bssid,
+        target_channel=config.Runtime.target_channel,
         exclusions=list(config.Runtime.excluded_essids),
         attack_modes=[dict(x) for x in config.attack_modes],
         timing=[dict(x) for x in config.timing],
@@ -85,16 +86,11 @@ def _build_request_cmd(req):
         if not targeted and not any(a in ("-p", "--pillage") for a in preset_args):
             cmd += ["-p", str(req.preset.get("scan", 20))]
         cmd.extend(preset_args)
-        if req.target_bssid:
-            cmd += ["-b", req.target_bssid]
-        if req.target_essid:
-            cmd += ["-e", req.target_essid]
+        if targeted:
+            _append_target(cmd, req)
     elif req.target_essid or req.target_bssid:
         cmd.extend(_config_flags(req, pillage=False))
-        if req.target_bssid:
-            cmd += ["-b", req.target_bssid]
-        if req.target_essid:
-            cmd += ["-e", req.target_essid]
+        _append_target(cmd, req)
     else:
         cmd.extend(_config_flags(req, pillage=True))
 
@@ -178,6 +174,19 @@ def _config_flags(req, pillage=True):
     return flags
 
 
+def _append_target(cmd, req):
+    """Single-target flags: lock the channel so wifite finds the target fast
+    (else it channel-hops and 'keeps scanning'), pin the BSSID/ESSID, and cap
+    the scan so it can't hang forever if the target isn't seen."""
+    if req.target_channel:
+        cmd += ["-c", str(req.target_channel)]
+    if req.target_bssid:
+        cmd += ["-b", req.target_bssid]
+    if req.target_essid:
+        cmd += ["-e", req.target_essid]
+    cmd += ["-p", str(config.TARGETED_SCAN_CAP)]
+
+
 def _append_filters(cmd, filters):
     """Emit only the filter-related flags from a config snapshot."""
     for opt in filters:
@@ -233,6 +242,7 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
         preset=preset,
         target_essid=config.Runtime.target_essid,
         target_bssid=config.Runtime.target_bssid,
+        target_channel=config.Runtime.target_channel,
         exclusions=list(config.Runtime.excluded_essids),
         attack_modes=[dict(x) for x in config.attack_modes],
         timing=[dict(x) for x in config.timing],

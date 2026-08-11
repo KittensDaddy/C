@@ -174,6 +174,7 @@ def main_menu():
                     # left over from a previous Scan & Attack selection.
                     config.Runtime.target_essid = None
                     config.Runtime.target_bssid = None
+                    config.Runtime.target_channel = None
                     quick_attack()
                 elif choice == "Config":
                     config_menu()
@@ -273,6 +274,7 @@ def scan_attack():
             target = nets[active]
             config.Runtime.target_essid = target["essid"]
             config.Runtime.target_bssid = target["bssid"]
+            config.Runtime.target_channel = target.get("channel")
             config.Runtime.current_bssid = target["bssid"]
             choose_mode(target["essid"])
             return

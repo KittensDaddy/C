@@ -179,7 +179,13 @@ class Runtime:
     excluded_essids = []
     target_essid = None
     target_bssid = None
+    target_channel = None          # channel of the picked target (speeds -c lock)
     stealth_active = False
+
+
+# Safety cap (seconds) for a single-target attack: wifite auto-attacks the moment
+# it sees the target, but this bounds the scan if the target isn't found.
+TARGETED_SCAN_CAP = 30
 
 
 # Runtime option containers (mutable lists of dicts)
