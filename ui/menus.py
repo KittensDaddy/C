@@ -42,22 +42,50 @@ def set_animated(on):
     _anim_enabled = on
 
 
-def _paint_statusbar(d):
-    # Clear a strip tall enough to cover the cat's ear/tail tips (which reach a
-    # px or two above the bar) so no pixels are left behind between frames.
-    h, w = config.HEIGHT, config.WIDTH
-    d.rectangle((0, h - 14, w, h), fill=theme.background())
-    status_bar(d)
+# Free-floating cat that bounces off the screen edges like a DVD-logo. Drawn
+# as a sprite over the current canvas, saving/restoring the pixels underneath so
+# it leaves no trail; a full-frame re-render (new canvas id) resets the save.
+_cat = {"x": 8.0, "y": 40.0, "vx": 1.7, "vy": 1.3, "phase": 0.0,
+        "patch": None, "box": (0, 0), "cid": 0}
+
+
+def _cat_tick():
+    from ui import cat
+    W, H = config.WIDTH, config.HEIGHT
+    st = _cat
+
+    def paint(c):
+        if st["patch"] is not None and st["cid"] == id(c):
+            c.paste(st["patch"], st["box"])          # erase previous cat
+        st["phase"] = (st["phase"] + 0.14) % 1.0
+        sp = cat.sprite(st["phase"], flip=st["vx"] < 0, scale=2)
+        sw, sh = sp.size
+        st["x"] += st["vx"]
+        st["y"] += st["vy"]
+        if st["x"] <= 0:
+            st["x"], st["vx"] = 0.0, abs(st["vx"])
+        elif st["x"] + sw >= W:
+            st["x"], st["vx"] = float(W - sw), -abs(st["vx"])
+        if st["y"] <= 0:
+            st["y"], st["vy"] = 0.0, abs(st["vy"])
+        elif st["y"] + sh >= H:
+            st["y"], st["vy"] = float(H - sh), -abs(st["vy"])
+        x, y = int(st["x"]), int(st["y"])
+        st["box"], st["cid"] = (x, y), id(c)
+        st["patch"] = c.crop((x, y, x + sw, y + sh)).copy()
+        c.paste(sp, (x, y), sp)
+
+    display.compose(paint)
 
 
 def _animator_loop():
     while True:
         if _anim_enabled:
             try:
-                display.overlay(_paint_statusbar)
+                _cat_tick()
             except Exception:  # noqa: BLE001
                 pass
-        time.sleep(0.08)          # ~12 fps cat
+        time.sleep(0.07)          # ~14 fps cat
 
 
 def start_animator():

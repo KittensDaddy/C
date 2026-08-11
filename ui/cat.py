@@ -18,6 +18,19 @@ def _leg(d, hipx, hipy, phase, leg_phase, color, reach=3.0, drop=3):
     d.line((hipx, hipy, fx, fy), fill=color, width=1)
 
 
+def sprite(phase, color=(240, 240, 240), flip=False, scale=1):
+    """Render the cat onto a transparent RGBA image (for free pasting/bouncing).
+    flip mirrors it to face left; scale enlarges (nearest-neighbour)."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGBA", (W + 2, H + 3), (0, 0, 0, 0))
+    draw(ImageDraw.Draw(img), 0, 2, phase, color=color, eye=(30, 30, 30))
+    if flip:
+        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+    if scale != 1:
+        img = img.resize((img.width * scale, img.height * scale), Image.NEAREST)
+    return img
+
+
 def draw(d, x, y, phase, color=(240, 240, 240), eye=(20, 20, 20)):
     """Draw the cat with its top-left at (x, y); phase in [0,1) drives the gait."""
     def P(px, py):

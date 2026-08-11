@@ -112,6 +112,22 @@ class Display:
         finally:
             self._lock.release()
 
+    def compose(self, fn):
+        """Let fn(canvas_image) mutate the current canvas, then commit. Used by
+        the full-screen screensaver. Skips if a full-frame render is running."""
+        if not self._lock.acquire(timeout=0.05):
+            return
+        try:
+            if self._canvas is not None:
+                fn(self._canvas)
+                if self.disp is not None:
+                    try:
+                        self.disp.LCD_ShowImage(self._canvas, 0, 0)
+                    except Exception:  # noqa: BLE001
+                        pass
+        finally:
+            self._lock.release()
+
     def clear(self):
         if self.disp is not None:
             try:
