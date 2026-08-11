@@ -43,8 +43,10 @@ def set_animated(on):
 
 
 def _paint_statusbar(d):
+    # Clear a strip tall enough to cover the cat's ear/tail tips (which reach a
+    # px or two above the bar) so no pixels are left behind between frames.
     h, w = config.HEIGHT, config.WIDTH
-    d.rectangle((0, h - 12, w, h), fill=theme.background())
+    d.rectangle((0, h - 14, w, h), fill=theme.background())
     status_bar(d)
 
 
