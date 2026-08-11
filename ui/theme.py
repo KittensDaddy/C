@@ -1,8 +1,35 @@
 # -*- coding: utf-8 -*-
 """Color themes and lightweight drawing helpers used across the UI."""
+from PIL import ImageFont
+
 import config
 
 _current_theme = config.COLOR_THEMES[0]
+
+# Real TrueType fonts read far better than the 6px PIL bitmap on the LCD.
+_FONT_FILES = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+)
+_font_cache = {}
+
+
+def font(size=11):
+    """Cached TrueType font at the given px size (falls back to bitmap)."""
+    if size in _font_cache:
+        return _font_cache[size]
+    loaded = None
+    for path in _FONT_FILES:
+        try:
+            loaded = ImageFont.truetype(path, size)
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if loaded is None:
+        loaded = ImageFont.load_default()
+    _font_cache[size] = loaded
+    return loaded
 
 
 def set_theme(index):
@@ -88,19 +115,20 @@ def rrect(draw, box, radius, fill=None, outline=None):
 
 
 def pill(draw, x, y, label, font, fg=None, bg=None):
-    """Small filled rounded chip with centred label. Returns its right edge."""
+    """Filled rounded chip sized to its font. Returns (right, bottom) edges."""
     if bg is None:
         bg = accent_color()
     if fg is None:
         fg = background()
     try:
-        w = int(draw.textlength(label, font=font))
+        bb = draw.textbbox((0, 0), label, font=font)
+        tw, th = bb[2] - bb[0], bb[3] - bb[1]
     except Exception:  # noqa: BLE001
-        w = len(label) * 6
-    x2 = x + w + 6
-    rrect(draw, (x, y, x2, y + 9), 2, fill=bg)
-    draw.text((x + 3, y + 1), label, font=font, fill=fg)
-    return x2
+        tw, th = len(label) * 7, 11
+    x2, y2 = x + tw + 8, y + th + 5
+    rrect(draw, (x, y, x2, y2), 3, fill=bg)
+    draw.text((x + 4, y + 1), label, font=font, fill=fg)
+    return x2, y2
 
 
 def gauge_color(remaining, warn=45, crit=15):

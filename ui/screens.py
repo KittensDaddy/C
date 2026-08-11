@@ -18,15 +18,31 @@ def font():
 
 
 def status_bar(draw):
-    """Draw bottom battery bar + voltage label."""
-    h = config.HEIGHT
-    battery.battery.read()
-    bw = config.WIDTH - 30
-    battery.battery.bar(draw, 12, h - 8, bw, 3)
-    # voltage label
-    _, vstr = battery.battery.read()
-    theme.shadowed(draw, vstr, (bw + 14, h - 9), font(),
-                   color=(200, 200, 200))
+    """Bottom battery gauge (icon + fill) with a right-aligned voltage label."""
+    h, W = config.HEIGHT, config.WIDTH
+    bat = battery.battery
+    pct, vstr = bat.read()          # single read per frame
+    fnt = font()
+
+    # Voltage label, right-aligned so it never runs off the 128px screen.
+    try:
+        tw = int(draw.textlength(vstr, font=fnt))
+    except Exception:  # noqa: BLE001
+        tw = len(vstr) * 6
+    theme.shadowed(draw, vstr, (W - 2 - tw, h - 9), fnt, color=(190, 190, 190))
+
+    # Battery icon: body + terminal nub, filled by percent with status colour.
+    x0, x1 = 3, W - 8 - tw
+    y0, bh = h - 8, 5
+    outline = theme.mix(theme.background(), theme.palette()["text"], 0.55)
+    if x1 - x0 >= 8:
+        draw.rectangle((x0, y0, x1, y0 + bh), outline=outline)
+        draw.rectangle((x1 + 1, y0 + 1, x1 + 2, y0 + bh - 1), fill=outline)  # nub
+        if pct is not None:
+            fill_w = int((x1 - x0 - 2) * pct / 100)
+            if fill_w > 0:
+                draw.rectangle((x0 + 1, y0 + 1, x0 + 1 + fill_w, y0 + bh - 1),
+                               fill=bat.color())
 
 
 def header(draw, title, show_ts=True):
@@ -104,7 +120,7 @@ class AttackStatus:
             self.cur_timeout = ""
         elif t == "attack":
             self.cur_essid = essid
-            self.cur_phase = "start"
+            self.cur_phase = ""       # no chip until a real phase arrives
             self.cur_timeout = ""
             if ev.get("current") and ev.get("total"):
                 self.target_cur = ev["current"]
@@ -168,69 +184,64 @@ class AttackStatus:
         self._tick += 1
         pal = theme.palette()
         d = display.begin()
-        box(d, self._header_title())
+        W, H = config.WIDTH, config.HEIGHT
+        d.rectangle((0, 0, W, H), fill=theme.background())
+        f_sm, f_mid, f_big = theme.font(10), theme.font(13), theme.font(18)
         c, h, f = self.summary()
-        W = config.WIDTH
 
-        # -- Zone A: overall run progress (target N/M) + trophy counts -----
+        # Header: the interface + driver we attack with, plus TS.
+        d.rectangle((0, 0, W, 15), fill=theme.shadow_color())
+        theme.shadowed(d, self._header_title(), (3, 2), f_sm,
+                       color=theme.highlight_color())
+        ts = tailscale.status()
+        theme.shadowed(d, "TS", (W - 20, 2), f_sm,
+                       color=theme.accent_color() if ts == "up" else (255, 60, 60))
+
+        # Run progress: "3/12" + bar + cracked count. Few words.
         theme.shadowed(d, "%d/%d" % (self.target_cur, self.target_total)
-                       if self.target_total else "--",
-                       (3, 15), font(), color=pal["text"])
-        bx0, bx1 = 30, W - 34
-        theme.progress_bar(d, bx0, 16, bx1 - bx0, 5,
-                           (100 * self.target_cur // self.target_total)
-                           if self.target_total else 0)
-        theme.shadowed(d, "+%d" % c, (W - 30, 15), font(),
-                       color=theme.accent_color())
-        theme.shadowed(d, "H%d" % h, (W - 16, 15), font(), color=pal["text"])
+                       if self.target_total else "scan", (3, 18), f_sm,
+                       color=pal["text"])
+        if self.target_total:
+            theme.progress_bar(d, 42, 21, W - 74, 5,
+                               100 * self.target_cur // self.target_total)
+        theme.shadowed(d, "+%d" % c, (W - 24, 18), f_sm, color=theme.accent_color())
 
-        # -- Zone B: the "current attack" card ----------------------------
-        card = (2, 25, W - 3, 50)
-        theme.rrect(d, card, 3, fill=theme.mix(pal["background"], pal["text"], 0.10),
-                    outline=theme.accent_color())
-        if self.cur_essid or self.cur_phase:
-            # essid + spinner
-            theme.shadowed(d, (self.cur_essid or "scanning")[:16], (6, 27),
-                           font(), color=theme.accent_color())
-            d.text((W - 12, 27), theme.spinner(self._tick), font=font(),
-                   fill=pal["text"])
-            # phase pill + live countdown gauge
-            secs = _to_secs(self.cur_timeout)
-            if self.cur_phase:
-                px = theme.pill(d, 6, 38, self.cur_phase[:12], font(),
-                                bg=theme.mix(pal["background"], theme.accent_color(), 0.7))
-            else:
-                px = 6
-            if self.cur_timeout:
-                theme.shadowed(d, self.cur_timeout, (W - 32, 38), font(),
-                               color=theme.gauge_color(secs))
-                pct = int(100 * secs / self._cd_max) if (secs and self._cd_max) else 100
-                theme.progress_bar(d, px + 4, 40, (W - 36) - (px + 4), 5, pct,
-                                   color=theme.gauge_color(secs))
-        else:
-            theme.shadowed(d, "starting %ds" % int(time.time() - self.start_time),
-                           (6, 33), font(), color=pal["text"])
+        # Current target — BIG and alone on its line (shrink if it's long).
+        essid = (self.cur_essid or "scanning")[:14]
+        ef = f_big if len(essid) <= 9 else theme.font(15)
+        theme.shadowed(d, essid, (3, 31), ef, color=theme.accent_color())
 
-        # -- Zone C: trophies (cracked persistent, then handshakes) -------
-        cracked = [r for r in self.results if r[1] == "cracked"]
-        shakes = [r for r in self.results if r[1] == "handshake"]
-        y, bottom = 54, config.HEIGHT - 11
-        for essid, _, cred in cracked:
+        # Phase chip + big live countdown.
+        secs = _to_secs(self.cur_timeout)
+        if self.cur_phase:
+            theme.pill(d, 3, 55, self.cur_phase[:9], f_mid,
+                       bg=theme.mix(pal["background"], theme.accent_color(), 0.7))
+        if self.cur_timeout:
+            theme.shadowed(d, self.cur_timeout, (W - 48, 52), f_big,
+                           color=theme.gauge_color(secs))
+            pct = int(100 * secs / self._cd_max) if (secs and self._cd_max) else 100
+            theme.progress_bar(d, 3, 74, W - 6, 6, pct, color=theme.gauge_color(secs))
+
+        d.line((0, 85, W, 85), fill=pal["text"])
+
+        # Trophies — 2 big, well-spaced rows; cracked first, then handshakes.
+        rows = [(True, r) for r in self.results if r[1] == "cracked"]
+        rows += [(False, r) for r in self.results if r[1] == "handshake"]
+        y, bottom = 88, H - 20
+        for is_key, (essid, _, cred) in rows:
             if y > bottom:
                 break
-            theme.circle(d, 6, y + 3, 2, theme.accent_color())
-            theme.shadowed(d, ("%s %s" % ((essid or "?")[:9], cred or ""))[:19],
-                           (12, y), font(), color=theme.accent_color())
-            y += 11
-        for essid, _, _ in shakes:
-            if y > bottom - (11 if f else 0):
-                break
-            theme.circle(d, 6, y + 3, 2, pal["text"])
-            theme.shadowed(d, (essid or "?")[:19], (12, y), font(), color=pal["text"])
-            y += 11
+            col = theme.accent_color() if is_key else pal["text"]
+            theme.circle(d, 6, y + 7, 3, col)
+            text = ("%s %s" % ((essid or "?")[:8], cred)) if (is_key and cred) \
+                else (essid or "?")[:14]
+            theme.shadowed(d, text[:16], (14, y), f_mid, color=col)
+            y += 16
         if f and y <= bottom:
-            theme.circle(d, 6, y + 3, 2, (255, 60, 60))
-            theme.shadowed(d, "%d failed" % f, (12, y), font(), color=(255, 60, 60))
+            theme.circle(d, 6, y + 7, 3, (255, 60, 60))
+            theme.shadowed(d, "%d failed" % f, (14, y), f_mid, color=(255, 60, 60))
+
+        status_bar(d)
         display.show()
 
 
