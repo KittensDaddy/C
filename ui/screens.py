@@ -98,6 +98,8 @@ class AttackStatus:
         self.cur_essid = ""
         self.cur_phase = ""       # short label: SCAN / WPS / PIXIE / PIN / HS / DEAUTH / CRACK
         self.cur_timeout = ""     # "0:38" countdown pulled from wifite, if any
+        self.scan_targets = 0     # live count while wifite is still scanning
+        self.scan_clients = 0
         self.results = []         # list of [essid, status, cred]
         self.start_time = time.time()
         self._tick = 0            # spinner animation counter
@@ -123,9 +125,10 @@ class AttackStatus:
         t = ev.get("type", "")
         essid = ev.get("essid", "") or ""
         if t == "scan":
+            self.scan_targets = ev.get("targets", 0)
+            self.scan_clients = ev.get("clients", 0)
             self.cur_essid = ""
-            self.cur_phase = "SCAN %d/%d" % (ev.get("targets", 0),
-                                             ev.get("clients", 0))
+            self.cur_phase = ""
             self.cur_timeout = ""
         elif t == "attack":
             self.cur_essid = essid
@@ -216,24 +219,32 @@ class AttackStatus:
                        color=WHITE)
         d.line((0, 12, W, 12), fill=WHITE)
 
-        # Run progress "3/12" + coloured bar + success count.
+        attacking = self.target_total > 0 or bool(self.cur_essid) or bool(self.results)
+        # Header line: "3/12" + bar while attacking, else "SCANNING".
         theme.shadowed(d, "%d/%d" % (self.target_cur, self.target_total)
-                       if self.target_total else "scan", (3, 15), fnt, color=WHITE)
+                       if self.target_total else ("SCANNING" if not attacking else "prep"),
+                       (3, 15), fnt, color=WHITE)
         if self.target_total:
             theme.progress_bar(d, 34, 16, W - 66, 5,
                                100 * self.target_cur // self.target_total)
         theme.shadowed(d, "OK%d" % (c + h), (W - 28, 15), fnt, color=WHITE)
 
-        # Current target + phase + countdown (mono text, coloured gauge bar).
-        cur = (self.cur_essid or "scanning")[:12]
-        if self.cur_phase:
-            cur = "%s %s" % (cur[:9], self.cur_phase[:6])
-        theme.shadowed(d, cur[:21], (3, 27), fnt, color=WHITE)
-        secs = _to_secs(self.cur_timeout)
-        if self.cur_timeout:
-            theme.shadowed(d, self.cur_timeout, (W - 28, 27), fnt, color=WHITE)
-            pct = int(100 * secs / self._cd_max) if (secs and self._cd_max) else 100
-            theme.progress_bar(d, 3, 38, W - 6, 4, pct, color=theme.gauge_color(secs))
+        if not attacking:
+            # Scanning: live count that climbs as wifite finds APs / clients.
+            theme.shadowed(d, "%s %d APs  %d STA" % (theme.spinner(self._tick),
+                           self.scan_targets, self.scan_clients),
+                           (3, 27), fnt, color=theme.accent_color())
+        else:
+            # Current target + phase + countdown (mono text, coloured gauge bar).
+            cur = (self.cur_essid or "...")[:12]
+            if self.cur_phase:
+                cur = "%s %s" % (cur[:9], self.cur_phase[:6])
+            theme.shadowed(d, cur[:21], (3, 27), fnt, color=WHITE)
+            secs = _to_secs(self.cur_timeout)
+            if self.cur_timeout:
+                theme.shadowed(d, self.cur_timeout, (W - 28, 27), fnt, color=WHITE)
+                pct = int(100 * secs / self._cd_max) if (secs and self._cd_max) else 100
+                theme.progress_bar(d, 3, 38, W - 6, 4, pct, color=theme.gauge_color(secs))
 
         d.line((0, 45, W, 45), fill=WHITE)
 
