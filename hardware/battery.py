@@ -3,6 +3,7 @@
 import time
 import sys
 import os
+import logging
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
@@ -23,6 +24,7 @@ class Battery:
         self._init()
 
     def _init(self):
+        last_err = None
         for probe in config.INA219_ADDRS:
             try:
                 import INA219
@@ -32,10 +34,18 @@ class Battery:
                 self.ina = ina
                 self.available = True
                 self.voltage = v
+                logging.getLogger("wifibox").info(
+                    "INA219 found at 0x%02x on bus %d (%.2fV)",
+                    probe, config.INA219_BUS, v)
                 break
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                last_err = e
                 continue
         if not self.available:
+            logging.getLogger("wifibox").warning(
+                "battery sensor not found on bus %d addrs %s: %s",
+                config.INA219_BUS,
+                [hex(a) for a in config.INA219_ADDRS], last_err)
             self.voltage = None
 
     def read(self, max_age=2.0):

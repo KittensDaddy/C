@@ -1,4 +1,7 @@
-import smbus
+try:
+    import smbus
+except ImportError:                 # Bookworm ships smbus2, not smbus
+    import smbus2 as smbus
 import time
 
 # Config Register (R/W)
