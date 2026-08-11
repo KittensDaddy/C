@@ -68,7 +68,9 @@ def _build_request_cmd(req):
     if req.clean_sessions:
         return ["sudo", wifite, "--clean-sessions"]
 
-    cmd = ["sudo", wifite, "-i", req.interface]
+    # --no-tui forces wifite's classic text output (the format our parser reads);
+    # its curses TUI would emit only cursor-positioned draws we can't parse.
+    cmd = ["sudo", wifite, "-i", req.interface, "--no-tui"]
     if req.preset:
         # Preset controls attack modes + timing. Config only contributes
         # filters and interface opts to avoid flag duplication.
@@ -200,9 +202,27 @@ def _append_interface_opts(cmd, opts):
                 cmd.append("--random-mac-vendor")
 
 
+from wifite.output import strip_ansi
+
+_RAW_LOG = config.PROJECT_DIR + "/wifite_raw.log"
+
+
+def _raw_log(line):
+    """Append wifite's (ANSI-stripped) output for diagnosing parse issues."""
+    try:
+        with open(_RAW_LOG, "a") as f:
+            f.write(strip_ansi(line)[:200] + "\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
                stop_flag=None):
     """Run an attack. Returns AttackResult."""
+    try:
+        open(_RAW_LOG, "w").close()      # fresh log each run
+    except Exception:  # noqa: BLE001
+        pass
     req = AttackRequest(
         interface=iface_mod.iface_name(iface),
         preset=preset,
@@ -306,6 +326,7 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
             buf = segments.pop()
             for seg in segments:
                 if seg.strip():
+                    _raw_log(seg)
                     _dispatch(parser.feed(seg))
             if progress_cb:
                 progress_cb(None, "elapsed %ds" % int(time.time() - start_time))

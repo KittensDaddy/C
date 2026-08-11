@@ -7,16 +7,43 @@ Returns a list of dicts:
 import subprocess
 import re
 import time
+import shutil
 
 import config
 from wifite import interface as iface_mod
+
+
+def _tool(name, *fallbacks):
+    """Resolve a tool to an absolute path (systemd PATH often lacks /usr/sbin)."""
+    return shutil.which(name) or next(
+        (p for p in fallbacks if _exists(p)), name)
+
+
+def _exists(path):
+    import os
+    return os.path.exists(path)
+
+
+IW = _tool("iw", "/usr/sbin/iw", "/sbin/iw")
+IWLIST = _tool("iwlist", "/usr/sbin/iwlist", "/sbin/iwlist")
+NMCLI = _tool("nmcli", "/usr/bin/nmcli")
+IP = _tool("ip", "/usr/sbin/ip", "/sbin/ip", "/bin/ip")
+
+
+def _log(msg):
+    try:
+        with open(config.LOG_FILE, "a") as f:
+            f.write("[scan] %s\n" % msg)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def run(cmd, timeout=25):
     try:
         return subprocess.run(cmd, capture_output=True, text=True,
                               timeout=timeout)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log("run failed %s: %s" % (cmd[:2], e))
         return None
 
 
@@ -86,12 +113,14 @@ def _parse_iwlist(stdout):
 def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
     """Scan for networks. Returns list of net dicts."""
     iface_name = iface_mod.iface_name(ifname)
-    # Make sure interface is in managed mode for scanning
+    # Managed mode + interface up, or `iw scan` returns nothing / errors.
     try:
         if iface_mod.is_in_monitor(iface_name):
             iface_mod.disable_monitor(iface_name)
     except Exception:  # noqa: BLE001
         pass
+    run([IP, "link", "set", iface_name, "up"])
+    _log("scanning on %s (iw=%s)" % (iface_name, IW))
 
     nets = []
     end = time.time() + (duration or 8)
@@ -99,16 +128,17 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
     while time.time() < end:
         if stop_flag and stop_flag.is_set():
             break
-        # Try `iw` first
-        out = run(["iw", "dev", iface_name, "scan"])
-        parsed = _parse_iw(out.stdout) if out else []
+        # Try `iw` first (absolute path — systemd PATH lacks /usr/sbin).
+        out = run([IW, "dev", iface_name, "scan"])
+        if out is not None and out.returncode != 0:
+            _log("iw rc=%s err=%s" % (out.returncode, (out.stderr or "")[:80]))
+        parsed = _parse_iw(out.stdout) if out and out.returncode == 0 else []
         if not parsed:
-            # Fallback: iwlist
-            out2 = run(["/usr/sbin/iwlist", iface_name, "scan"])
+            out2 = run([IWLIST, iface_name, "scan"])
             parsed = _parse_iwlist(out2.stdout) if out2 else []
         if not parsed:
-            # Fallback: nmcli — pin to the external iface so it never scans wl0.
-            out3 = run(["nmcli", "-t", "-f", "SSID,BSSID,SIGNAL", "dev",
+            # nmcli fallback — pin to the external iface so it never scans wl0.
+            out3 = run([NMCLI, "-t", "-f", "SSID,BSSID,SIGNAL", "dev",
                         "wifi", "list", "ifname", iface_name])
             if out3:
                 parsed = _parse_nmcli(out3.stdout)
@@ -126,6 +156,8 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
         if nets:
             break
         time.sleep(0.8)     # nothing yet — brief pause, then retry the fallbacks
+
+    _log("scan done: %d nets" % len(nets))
 
     # de-dup by bssid one final time
     seen = {}
