@@ -8,6 +8,7 @@ from PIL import ImageFont
 
 import config
 from ui import theme
+from ui import cat
 from hardware import battery
 from hardware.display import display
 from network import tailscale
@@ -17,32 +18,39 @@ def font():
     return ImageFont.load_default()
 
 
+def _battery3(draw, x, y, pct):
+    """Chunky 3-segment battery icon: 1 bar red, 2 bars orange, 3 bars green."""
+    w, ht, gap = 30, 10, 2
+    outline = theme.mix(theme.background(), (255, 255, 255), 0.6)
+    draw.rectangle((x, y, x + w, y + ht), outline=outline)
+    draw.rectangle((x + w + 1, y + 3, x + w + 3, y + ht - 3), fill=outline)  # nub
+    if pct is None:
+        return
+    if pct >= config.BATTERY_HIGH:
+        n, col = 3, (0, 220, 70)          # green
+    elif pct >= config.BATTERY_MID:
+        n, col = 2, (255, 150, 0)         # orange
+    else:
+        n, col = 1, (255, 45, 45)         # red
+    seg = (w - 2 - gap * 2) / 3.0
+    for i in range(n):
+        sx = x + 2 + i * (seg + gap)
+        draw.rectangle((round(sx), y + 2, round(sx + seg), y + ht - 2), fill=col)
+
+
 def status_bar(draw):
-    """Bottom battery gauge (icon + fill) with a right-aligned voltage label."""
+    """Bottom bar: chunky 3-bar colour battery at left, a cat galloping across
+    the bottom-right."""
     h, W = config.HEIGHT, config.WIDTH
-    bat = battery.battery
-    pct, vstr = bat.read()          # single read per frame
-    fnt = font()
+    pct, _ = battery.battery.read()         # single read per frame
+    _battery3(draw, 2, h - 11, pct)
 
-    # Voltage label, right-aligned so it never runs off the 128px screen.
-    try:
-        tw = int(draw.textlength(vstr, font=fnt))
-    except Exception:  # noqa: BLE001
-        tw = len(vstr) * 6
-    theme.shadowed(draw, vstr, (W - 2 - tw, h - 9), fnt, color=(190, 190, 190))
-
-    # Battery icon: body + terminal nub, filled by percent with status colour.
-    x0, x1 = 3, W - 8 - tw
-    y0, bh = h - 8, 5
-    outline = theme.mix(theme.background(), theme.palette()["text"], 0.55)
-    if x1 - x0 >= 8:
-        draw.rectangle((x0, y0, x1, y0 + bh), outline=outline)
-        draw.rectangle((x1 + 1, y0 + 1, x1 + 2, y0 + bh - 1), fill=outline)  # nub
-        if pct is not None:
-            fill_w = int((x1 - x0 - 2) * pct / 100)
-            if fill_w > 0:
-                draw.rectangle((x0 + 1, y0 + 1, x0 + 1 + fill_w, y0 + bh - 1),
-                               fill=bat.color())
+    # Running cat loops across the bottom-right half of the screen.
+    x0, x1 = 60, W + cat.W
+    t = time.time()
+    catx = x0 + int((t * 26) % (x1 - x0))   # ~26 px/s to the right, wraps
+    phase = (t * 2.6) % 1.0                 # gait cycles ~2.6 strides/sec
+    cat.draw(draw, catx, h - cat.H, phase, color=(235, 235, 235))
 
 
 def header(draw, title, show_ts=True):
@@ -230,7 +238,7 @@ class AttackStatus:
         d.line((0, 45, W, 45), fill=WHITE)
 
         # Running log of previous attacks, each quoted success / failed.
-        y, bottom = 48, H - 11
+        y, bottom = 48, H - 22
         for essid, status, cred in self.results[-6:]:
             if y > bottom:
                 break
