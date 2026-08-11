@@ -76,6 +76,22 @@ class AttackStatus:
         self.cur_timeout = ""     # "0:38" countdown pulled from wifite, if any
         self.results = []         # list of [essid, status, cred]
         self.start_time = time.time()
+        self._tick = 0            # spinner animation counter
+        self._phase_key = None    # (essid, phase) to reset the countdown gauge
+        self._cd_max = None       # largest countdown seen this phase (for bar %)
+        self.iface = ""           # attack interface name
+        self.driver = ""          # its kernel driver (e.g. rtl8xxxu)
+
+    def set_iface(self, name, driver=""):
+        self.iface = name or ""
+        self.driver = driver or ""
+
+    def _header_title(self):
+        """Header shows the live attack interface + driver, not a static label."""
+        name = getattr(config.Runtime, "monitor_iface", None) or self.iface
+        if not name:
+            return self.title
+        return ("%s %s" % (name, self.driver)).strip()[:16]
 
     # -- event intake -----------------------------------------------------
     def handle_event(self, ev):
@@ -98,6 +114,7 @@ class AttackStatus:
                 self.cur_essid = essid
             self.cur_phase = _phase_label(ev.get("phase", ""), ev.get("detail", ""))
             self.cur_timeout = _timeout(ev.get("detail", ""))
+            self._track_countdown()
         elif t == "deauth":
             self.cur_phase = "DEAUTH %s/%s" % (ev.get("current", "?"),
                                                ev.get("total", "?"))
@@ -136,59 +153,85 @@ class AttackStatus:
         f = sum(1 for r in self.results if r[1] in ("failed", "skipped"))
         return c, h, f
 
+    def _track_countdown(self):
+        """Remember the largest countdown per phase so the gauge can deplete."""
+        key = (self.cur_essid, self.cur_phase)
+        if key != self._phase_key:
+            self._phase_key = key
+            self._cd_max = None
+        secs = _to_secs(self.cur_timeout)
+        if secs is not None and (self._cd_max is None or secs > self._cd_max):
+            self._cd_max = secs
+
     # -- rendering --------------------------------------------------------
     def render(self):
+        self._tick += 1
+        pal = theme.palette()
         d = display.begin()
-        box(d, self.title)
+        box(d, self._header_title())
         c, h, f = self.summary()
+        W = config.WIDTH
 
-        # line 1: overall progress + trophy counts
-        if self.target_total:
-            head = "ATK %d/%d  +%d H:%d" % (self.target_cur, self.target_total, c, h)
-        else:
-            head = "ATK  +%d H:%d" % (c, h)
-        theme.shadowed(d, head[:21], (3, 15), font(),
-                       color=theme.highlight_color())
-
-        # line 2: current target + phase + live countdown
-        theme.shadowed(d, self._current_line()[:21], (3, 27), font(),
+        # -- Zone A: overall run progress (target N/M) + trophy counts -----
+        theme.shadowed(d, "%d/%d" % (self.target_cur, self.target_total)
+                       if self.target_total else "--",
+                       (3, 15), font(), color=pal["text"])
+        bx0, bx1 = 30, W - 34
+        theme.progress_bar(d, bx0, 16, bx1 - bx0, 5,
+                           (100 * self.target_cur // self.target_total)
+                           if self.target_total else 0)
+        theme.shadowed(d, "+%d" % c, (W - 30, 15), font(),
                        color=theme.accent_color())
-        d.line((0, 38, config.WIDTH, 38), fill=theme.palette()["text"])
+        theme.shadowed(d, "H%d" % h, (W - 16, 15), font(), color=pal["text"])
 
-        # trophy list: cracked (persistent) then handshakes, failures collapsed
+        # -- Zone B: the "current attack" card ----------------------------
+        card = (2, 25, W - 3, 50)
+        theme.rrect(d, card, 3, fill=theme.mix(pal["background"], pal["text"], 0.10),
+                    outline=theme.accent_color())
+        if self.cur_essid or self.cur_phase:
+            # essid + spinner
+            theme.shadowed(d, (self.cur_essid or "scanning")[:16], (6, 27),
+                           font(), color=theme.accent_color())
+            d.text((W - 12, 27), theme.spinner(self._tick), font=font(),
+                   fill=pal["text"])
+            # phase pill + live countdown gauge
+            secs = _to_secs(self.cur_timeout)
+            if self.cur_phase:
+                px = theme.pill(d, 6, 38, self.cur_phase[:12], font(),
+                                bg=theme.mix(pal["background"], theme.accent_color(), 0.7))
+            else:
+                px = 6
+            if self.cur_timeout:
+                theme.shadowed(d, self.cur_timeout, (W - 32, 38), font(),
+                               color=theme.gauge_color(secs))
+                pct = int(100 * secs / self._cd_max) if (secs and self._cd_max) else 100
+                theme.progress_bar(d, px + 4, 40, (W - 36) - (px + 4), 5, pct,
+                                   color=theme.gauge_color(secs))
+        else:
+            theme.shadowed(d, "starting %ds" % int(time.time() - self.start_time),
+                           (6, 33), font(), color=pal["text"])
+
+        # -- Zone C: trophies (cracked persistent, then handshakes) -------
         cracked = [r for r in self.results if r[1] == "cracked"]
         shakes = [r for r in self.results if r[1] == "handshake"]
-        y = 41
-        bottom = config.HEIGHT - 11
+        y, bottom = 54, config.HEIGHT - 11
         for essid, _, cred in cracked:
             if y > bottom:
                 break
-            text = "+%s %s" % ((essid or "?")[:9], (cred or "")[:9])
-            theme.shadowed(d, text[:21], (3, y), font(), color=theme.accent_color())
-            y += 10
+            theme.circle(d, 6, y + 3, 2, theme.accent_color())
+            theme.shadowed(d, ("%s %s" % ((essid or "?")[:9], cred or ""))[:19],
+                           (12, y), font(), color=theme.accent_color())
+            y += 11
         for essid, _, _ in shakes:
-            if y > bottom - (10 if f else 0):
+            if y > bottom - (11 if f else 0):
                 break
-            theme.shadowed(d, ("H %s" % (essid or "?"))[:21], (3, y), font(),
-                           color=theme.palette()["text"])
-            y += 10
+            theme.circle(d, 6, y + 3, 2, pal["text"])
+            theme.shadowed(d, (essid or "?")[:19], (12, y), font(), color=pal["text"])
+            y += 11
         if f and y <= bottom:
-            theme.shadowed(d, "- %d failed" % f, (3, y), font(),
-                           color=theme.highlight_color())
+            theme.circle(d, 6, y + 3, 2, (255, 60, 60))
+            theme.shadowed(d, "%d failed" % f, (12, y), font(), color=(255, 60, 60))
         display.show()
-
-    def _current_line(self):
-        if not self.cur_essid and not self.cur_phase:
-            return "> starting %ds" % int(time.time() - self.start_time)
-        parts = [">"]
-        if self.cur_essid:
-            parts.append(self.cur_essid[:9])
-        if self.cur_phase:
-            parts.append(self.cur_phase)
-        line = " ".join(parts)
-        if self.cur_timeout:
-            line += " " + self.cur_timeout
-        return line
 
 
 def _phase_label(phase, detail):
@@ -219,6 +262,12 @@ def _timeout(detail):
     if not m:
         return ""
     return "%d:%02d" % (int(m.group(1)), int(m.group(2)))
+
+
+def _to_secs(mmss):
+    """'3:42' -> 222 seconds, or None."""
+    m = re.match(r"(\d+):(\d{2})$", mmss or "")
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
 
 
 class ProgressView:

@@ -72,3 +72,50 @@ def progress_bar(draw, x, y, w, h, percent, color=None, bg=None):
 def circle(draw, cx, cy, r, color):
     """Draw a filled circle centered at (cx, cy)."""
     draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=color)
+
+
+def mix(a, b, t):
+    """Blend colour a toward b by fraction t (0..1)."""
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def rrect(draw, box, radius, fill=None, outline=None):
+    """Rounded rectangle with graceful fallback on older Pillow."""
+    try:
+        draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline)
+    except (AttributeError, TypeError):
+        draw.rectangle(box, fill=fill, outline=outline)
+
+
+def pill(draw, x, y, label, font, fg=None, bg=None):
+    """Small filled rounded chip with centred label. Returns its right edge."""
+    if bg is None:
+        bg = accent_color()
+    if fg is None:
+        fg = background()
+    try:
+        w = int(draw.textlength(label, font=font))
+    except Exception:  # noqa: BLE001
+        w = len(label) * 6
+    x2 = x + w + 6
+    rrect(draw, (x, y, x2, y + 9), 2, fill=bg)
+    draw.text((x + 3, y + 1), label, font=font, fill=fg)
+    return x2
+
+
+def gauge_color(remaining, warn=45, crit=15):
+    """Green → orange → red as a countdown runs low (seconds)."""
+    if remaining is None:
+        return accent_color()
+    if remaining <= crit:
+        return (255, 60, 60)
+    if remaining <= warn:
+        return (255, 170, 0)
+    return accent_color()
+
+
+SPINNER = "|/-\\"
+
+
+def spinner(tick):
+    return SPINNER[tick % len(SPINNER)]

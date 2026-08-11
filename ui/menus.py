@@ -255,6 +255,8 @@ def run_and_show(preset):
         time.sleep(1.5)
         return
     st = AttackStatus("ATTACK")
+    st.set_iface(iface_mod.iface_name(iface),
+                 iface[1] if isinstance(iface, tuple) else "")
     st.render()
     stop = threading.Event()
 
