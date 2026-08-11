@@ -18,6 +18,8 @@ class Battery:
         self.available = False
         self.voltage = None
         self.percent = None
+        self._last_read = 0.0        # cache: I2C read is polled per frame
+        self._last_vstr = "-.-V"
         self._init()
 
     def _init(self):
@@ -36,19 +38,26 @@ class Battery:
         if not self.available:
             self.voltage = None
 
-    def read(self):
-        """Update voltage/percent. Returns (percent, voltage_str)."""
+    def read(self, max_age=2.0):
+        """Update voltage/percent (cached). Returns (percent, voltage_str)."""
+        now = time.time()
+        if now - self._last_read < max_age:
+            return self.percent, self._last_vstr
+        self._last_read = now
         if self.ina is not None:
             try:
                 v = self.ina.getBusVoltage_V()
                 self.voltage = v
                 p = (v - 3.0) / 1.2 * 100.0
                 self.percent = max(0, min(100, p))
-                return self.percent, "%.1fV" % v
+                self._last_vstr = "%.1fV" % v
+                return self.percent, self._last_vstr
             except Exception:  # noqa: BLE001
                 self.available = False
                 self.ina = None
-        return None, "-.-V"
+        self.percent = None
+        self._last_vstr = "-.-V"
+        return None, self._last_vstr
 
     def color(self):
         """Battery bar color based on percent: white/orange/red."""

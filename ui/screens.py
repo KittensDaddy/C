@@ -97,6 +97,7 @@ class AttackStatus:
         self._cd_max = None       # largest countdown seen this phase (for bar %)
         self.iface = ""           # attack interface name
         self.driver = ""          # its kernel driver (e.g. rtl8xxxu)
+        self._last_paint = 0.0    # frame-rate cap (SPI paints are the bottleneck)
 
     def set_iface(self, name, driver=""):
         self.iface = name or ""
@@ -180,9 +181,17 @@ class AttackStatus:
             self._cd_max = secs
 
     # -- rendering --------------------------------------------------------
-    def render(self):
+    def render(self, force=False):
         """Monochrome cyberpunk layout: text is white-on-dark with a shadow;
-        only the battery and the progress/countdown bars carry colour."""
+        only the battery and the progress/countdown bars carry colour.
+
+        Frame-rate capped: wifite emits many lines/sec and each would trigger a
+        full SPI repaint, so intermediate frames are dropped. State is still
+        updated by handle_event; the next allowed frame shows the latest."""
+        now = time.time()
+        if not force and now - self._last_paint < 0.1:
+            return
+        self._last_paint = now
         self._tick += 1
         d = display.begin()
         W, H = config.WIDTH, config.HEIGHT

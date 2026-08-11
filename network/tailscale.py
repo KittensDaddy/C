@@ -2,8 +2,14 @@
 """Tailscale status/connectivity helpers with graceful fallbacks."""
 import subprocess
 import shutil
+import time
 
 import config
+
+# status() is polled from the render loop, so cache it — a subprocess spawn
+# per frame is what makes the LCD lag. Refreshed at most once per interval.
+_STATUS_TTL = 15.0
+_status_cache = {"t": 0.0, "v": None}
 
 
 def run(cmd, timeout=20):
@@ -18,8 +24,18 @@ def available():
     return shutil.which("tailscale") is not None
 
 
-def status():
-    """Return one of: 'up', 'down', 'logged_out', 'no_tailscale'."""
+def status(max_age=_STATUS_TTL):
+    """Return one of: 'up', 'down', 'logged_out', 'no_tailscale' (cached)."""
+    now = time.time()
+    if _status_cache["v"] is not None and now - _status_cache["t"] < max_age:
+        return _status_cache["v"]
+    v = _status_uncached()
+    _status_cache["t"] = now
+    _status_cache["v"] = v
+    return v
+
+
+def _status_uncached():
     if not available():
         return "no_tailscale"
     r = run(["tailscale", "status"])
