@@ -170,6 +170,10 @@ def main_menu():
                 if choice == "Scan & Attack":
                     scan_attack()
                 elif choice == "Quick Attack":
+                    # Main-menu Quick Attack pillages all — clear any target
+                    # left over from a previous Scan & Attack selection.
+                    config.Runtime.target_essid = None
+                    config.Runtime.target_bssid = None
                     quick_attack()
                 elif choice == "Config":
                     config_menu()
