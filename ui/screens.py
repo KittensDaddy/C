@@ -100,7 +100,11 @@ class AttackStatus:
         self.cur_timeout = ""     # "0:38" countdown pulled from wifite, if any
         self.scan_targets = 0     # live count while wifite is still scanning
         self.scan_clients = 0
-        self.results = []         # list of [essid, status, cred]
+        self.cur_signal = None    # current target power (dBm)
+        self.cur_clients = 0      # associated clients on current target
+        self.target_start = time.time()   # when the current target began
+        self.last_deauth = 0.0    # last time a deauth event arrived (for a pulse)
+        self.results = []         # list of [essid, status, cred/reason]
         self.start_time = time.time()
         self._tick = 0            # spinner animation counter
         self._phase_key = None    # (essid, phase) to reset the countdown gauge
@@ -131,6 +135,10 @@ class AttackStatus:
             self.cur_phase = ""
             self.cur_timeout = ""
         elif t == "attack":
+            if essid != self.cur_essid:      # moved to a new target -> reset
+                self.target_start = time.time()
+                self.cur_signal = None
+                self.cur_clients = 0
             self.cur_essid = essid
             self.cur_phase = ""       # no chip until a real phase arrives
             self.cur_timeout = ""
@@ -142,11 +150,15 @@ class AttackStatus:
                 self.cur_essid = essid
             self.cur_phase = _phase_label(ev.get("phase", ""), ev.get("detail", ""))
             self.cur_timeout = _timeout(ev.get("detail", ""))
+            if ev.get("signal") is not None:
+                self.cur_signal = ev["signal"]
+            if ev.get("clients") is not None:
+                self.cur_clients = ev["clients"]
             self._track_countdown()
         elif t == "deauth":
-            self.cur_phase = "DEAUTH %s/%s" % (ev.get("current", "?"),
-                                               ev.get("total", "?"))
-            self.cur_timeout = ""
+            self.last_deauth = time.time()
+            if ev.get("signal") is not None:
+                self.cur_signal = ev["signal"]
         elif t == "cracking":
             self.cur_phase = "CRACK"
             self.cur_timeout = ""
@@ -157,9 +169,9 @@ class AttackStatus:
         elif t == "cracked":
             self._set(essid, "cracked", str(ev.get("psk", "?")))
         elif t == "failed":
-            self._set(essid, "failed")
+            self._set(essid, "failed", ev.get("detail"))
         elif t == "skipped":
-            self._set(essid, "skipped")
+            self._set(essid, "skipped", ev.get("detail"))
 
     def _set(self, essid, status, cred=None):
         if not essid:
@@ -235,7 +247,7 @@ class AttackStatus:
                            self.scan_targets, self.scan_clients),
                            (3, 27), fnt, color=theme.accent_color())
         else:
-            # Current target + phase + countdown (mono text, coloured gauge bar).
+            # Line 2: current target + phase + countdown (coloured gauge bar).
             cur = (self.cur_essid or "...")[:12]
             if self.cur_phase:
                 cur = "%s %s" % (cur[:9], self.cur_phase[:6])
@@ -243,21 +255,32 @@ class AttackStatus:
             secs = _to_secs(self.cur_timeout)
             if self.cur_timeout:
                 theme.shadowed(d, self.cur_timeout, (W - 28, 27), fnt, color=WHITE)
+            # Line 3: signal · clients · deauth pulse · elapsed-on-target.
+            theme.shadowed(d, self._info_line(), (3, 37), fnt, color=WHITE)
+            # Line 4: countdown gauge (or a plain divider when no countdown).
+            if self.cur_timeout:
                 pct = int(100 * secs / self._cd_max) if (secs and self._cd_max) else 100
-                theme.progress_bar(d, 3, 38, W - 6, 4, pct, color=theme.gauge_color(secs))
+                theme.progress_bar(d, 3, 47, W - 6, 4, pct, color=theme.gauge_color(secs))
+            else:
+                d.line((0, 48, W, 48), fill=WHITE)
 
-        d.line((0, 45, W, 45), fill=WHITE)
+        if not attacking:
+            d.line((0, 45, W, 45), fill=WHITE)
 
-        # Running log of previous attacks, each quoted success / failed.
-        y, bottom = 48, H - 22
+        # Running log of previous attacks, each quoted with its outcome/reason.
+        y, bottom = 53, H - 20
         for essid, status, cred in self.results[-6:]:
             if y > bottom:
                 break
             ok = status in ("cracked", "handshake")
             if status == "cracked" and cred:
                 tail = cred[:9]
-            else:
-                tail = "success" if ok else "failed"
+            elif ok:
+                tail = "success"
+            elif status == "skipped":
+                tail = (cred or "skip")[:9]
+            else:                                   # failed -> reason
+                tail = (cred or "failed")[:9]
             glyph = "+" if ok else "-"
             theme.shadowed(d, ("%s %s %s" % (glyph, (essid or "?")[:9], tail))[:21],
                            (3, y), fnt, color=WHITE)
@@ -265,6 +288,17 @@ class AttackStatus:
 
         status_bar(d)
         display.show()
+
+    def _info_line(self):
+        """signal · clients · deauth pulse · elapsed-on-target, kept compact."""
+        parts = []
+        if self.cur_signal is not None:
+            parts.append("%ddB" % self.cur_signal)
+        parts.append("%dc" % self.cur_clients)
+        if time.time() - self.last_deauth < 2.5:      # recent deauth -> blink
+            parts.append("DEA" if self._tick % 2 else "   ")
+        parts.append("%ds" % int(time.time() - self.target_start))
+        return " ".join(parts)[:21]
 
 
 def _phase_label(phase, detail):
@@ -275,8 +309,7 @@ def _phase_label(phase, detail):
     if "PIN" in p:
         return "PIN"
     if "HANDSHAKE" in p or ("WPA" in p and "DEAUTH" not in p):
-        m = re.search(r"clients[:=](\d+)", detail or "", re.I)
-        return "HS c%s" % m.group(1) if m else "HS"
+        return "HS"           # client count is shown on the info line
     if "DEAUTH" in p:
         return "DEAUTH"
     if "CRACK" in p:

@@ -248,7 +248,8 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
                 elif ev.type == EventType.FAILED:
                     results["failed"].append(ev.essid)
                     if status_cb:
-                        status_cb({"type": t, "essid": ev.essid})
+                        status_cb({"type": t, "essid": ev.essid,
+                                   "detail": ev.detail})
                 elif ev.type == EventType.TARGET:
                     if status_cb:
                         status_cb({"type": "attack", "essid": ev.essid,

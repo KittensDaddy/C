@@ -69,6 +69,7 @@ class AttackEvent:
     clients: Optional[int] = None
     current: Optional[int] = None
     total: Optional[int] = None
+    signal: Optional[int] = None
     exit_code: Optional[int] = None
     cancelled: bool = False
     raw: Optional[str] = field(default=None, repr=False)
@@ -168,12 +169,29 @@ def strip_ansi(value: Optional[str]) -> str:
     return ANSI.sub("", value or "")
 
 
+def _fail_reason(text):
+    """Compress a wifite failure message into a short, glanceable reason."""
+    t = (text or "").lower()
+    if "lock" in t:
+        return "wps lock"
+    if "timeout" in t or "timed out" in t:
+        return "timeout"
+    if "no client" in t or "clients:0" in t or "clients=0" in t:
+        return "no client"
+    if "no attacks succeeded" in t or "no attack" in t:
+        return "no attack"
+    if "assoc" in t:
+        return "no assoc"
+    return "failed"
+
+
 class OutputParser:
     """Return typed events. Unknown lines remain visible as MESSAGE events."""
 
     def __init__(self):
         self.current_essid = None
         self.current_bssid = None
+        self.current_signal = None
 
     def feed(self, chunk: str) -> List[AttackEvent]:
         events = []
@@ -187,11 +205,13 @@ class OutputParser:
     def _event(self, kind, line, **values):
         values.setdefault("essid", self.current_essid)
         values.setdefault("bssid", self.current_bssid)
+        values.setdefault("signal", self.current_signal)
         return AttackEvent(kind, raw=line, **values)
 
     # Attack types wifite passes as the first arg of Color.pattack().
+    # Group 2 captures the target power (dBm) so we can surface signal strength.
     PATTACK = re.compile(
-        r"\[\+\]\s+(.+?)\s+\(\s*(?:[-+]?\d+|\?\?)\s*db\)\s+"
+        r"\[\+\]\s+(.+?)\s+\(\s*([-+]?\d+|\?\?)\s*db\)\s+"
         r"(WPA3|WPA|WPS|WEP|PMKID|OWE|EVIL\s*TWIN)\s+(.+?):\s*(.*)$",
         re.I)
 
@@ -248,7 +268,7 @@ class OutputParser:
         # 5) Failures / skips / clients / deauth.
         if re.search(r"\[!\].*(?:FAILED|Failed:|Target timeout|No attacks succeeded)",
                      line, re.I):
-            return self._event(EventType.FAILED, line, detail=line[:48])
+            return self._event(EventType.FAILED, line, detail=_fail_reason(line))
         match = re.search(r"\[!\]\s+Skipping\s+.*?(?:attack on|on)\s+(.+?)(?:\s+because|$)",
                           line, re.I)
         if match:
@@ -268,11 +288,17 @@ class OutputParser:
 
     def _parse_pattack(self, m, line: str) -> AttackEvent:
         essid = m.group(1).strip()
-        atype = re.sub(r"\s+", " ", m.group(2).strip().upper())
-        name = m.group(3).strip()
-        prog = m.group(4).strip()
+        power = m.group(2)
+        atype = re.sub(r"\s+", " ", m.group(3).strip().upper())
+        name = m.group(4).strip()
+        prog = m.group(5).strip()
         if essid and essid.lower() not in ("unknown", "essid unknown"):
             self.current_essid = essid
+        if power and power != "??":
+            self.current_signal = int(power)
+        # Associated-client count (WPA handshake needs one to deauth).
+        mc = re.search(r"clients?[:=]\s*(\d+)", prog, re.I)
+        clients = int(mc.group(1)) if mc else None
         phase = ("%s %s" % (atype, name)).upper()
         blob = "%s %s" % (name, prog)
 
@@ -299,7 +325,8 @@ class OutputParser:
 
         # Genuine failure (avoid matching the benign "timeout:MM:SS" countdown).
         if re.search(r"\bFAILED\b|Failed:|Target timeout", blob, re.I):
-            return self._event(EventType.FAILED, line, detail=prog[:48])
+            return self._event(EventType.FAILED, line, detail=_fail_reason(blob))
 
         # Otherwise it's a live phase heartbeat (Listening/Waiting/Sending/etc).
-        return self._event(EventType.PHASE, line, phase=phase, detail=prog)
+        return self._event(EventType.PHASE, line, phase=phase, detail=prog,
+                           clients=clients)
