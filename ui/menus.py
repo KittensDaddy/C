@@ -68,6 +68,11 @@ def start_animator():
 
 
 def _on_button(ev):
+    # Joystick left/right also scroll lists (mapped to up/down); back is KEY1.
+    if ev.get("type") == "left":
+        ev["type"] = "up"
+    elif ev.get("type") == "right":
+        ev["type"] = "down"
     _evq.put(ev)
 
 
@@ -203,12 +208,15 @@ def scan_attack():
     config.Runtime.selected_interface = iface
 
     pv = ProgressView("SCAN")
-    pv.push("Using %s" % iface[0])
+    pv.push("Scanning %s..." % iface[0])
+    pv.render()
 
-    duration = _scan_time_seconds()
-    nets = sc.scan(iface[0], duration=duration,
-                   progress_cb=lambda n: pv.push("found %d nets" % n),
-                   stop_flag=None)
+    def _prog(n):
+        pv.push("found %d nets" % n)
+        pv.render()
+
+    nets = sc.scan(iface[0], duration=config.INTERACTIVE_SCAN_SECONDS,
+                   progress_cb=_prog, stop_flag=None)
     nets = sc.sort_by_signal(nets)
 
     if not nets:
@@ -507,8 +515,14 @@ def exclude_menu():
         return
     pv = ProgressView("SCAN")
     pv.push("scanning...")
-    nets = sc.scan(iface[0], duration=_scan_time_seconds(),
-                   progress_cb=lambda n: pv.push("found %d" % n))
+    pv.render()
+
+    def _prog(n):
+        pv.push("found %d" % n)
+        pv.render()
+
+    nets = sc.scan(iface[0], duration=config.INTERACTIVE_SCAN_SECONDS,
+                   progress_cb=_prog)
     nets = sc.sort_by_signal(nets)
     if not nets:
         pv.push("ERR no networks")

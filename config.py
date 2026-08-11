@@ -38,6 +38,7 @@ OPTIONS_PER_PAGE = 10
 MAX_CHARS_PER_LINE = WIDTH // 6   # 21 chars at default font
 
 DEBOUNCE_TIME = 0.15
+INTERACTIVE_SCAN_SECONDS = 8    # short scan for the target-picker (not the -p attack value)
 SCROLL_HOLD_TIME = 2.0          # hold a scroll key before it accelerates
 SCROLL_FAST_SPEED = 0.03        # seconds between steps when held
 SCROLL_SLOW_SPEED = 0.10

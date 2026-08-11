@@ -94,7 +94,7 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
         pass
 
     nets = []
-    end = time.time() + (duration or 20)
+    end = time.time() + (duration or 8)
 
     while time.time() < end:
         if stop_flag and stop_flag.is_set():
@@ -121,9 +121,11 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
         if progress_cb:
             progress_cb(len(nets))
 
-        time.sleep(0.4)
-        # don't rescan too fast; give the kernel a moment
-        time.sleep(1.6)
+        # A single `iw scan` already returns every nearby AP, so stop as soon
+        # as a pass finds something instead of spinning the whole duration.
+        if nets:
+            break
+        time.sleep(0.8)     # nothing yet — brief pause, then retry the fallbacks
 
     # de-dup by bssid one final time
     seen = {}
