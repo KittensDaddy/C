@@ -1,34 +1,81 @@
-import LCD_1in44
+# -*- coding: utf-8 -*-
+"""wifi-box v2 entry point.
+
+Initializes hardware (display, buttons, battery) with graceful fallbacks,
+shows the splash, then runs the main menu. Never exits with a black screen:
+top-level try/except ensures cleanup + a readable error.
+"""
+import sys
 import os
 import time
-import RPi.GPIO as GPIO
 import threading
-from setting import (KEY_UP_PIN, KEY_DOWN_PIN, KEY_PRESS_PIN, KEY1_PIN, 
-                    KEY2_PIN, KEY3_PIN)
-from display import splash_screen
-from menu_utils import landing_menu, monitor_buttons
-from essid_utils import ESSIDS, excluded_essid, selected_essid, selected_bssid
+import traceback
 
-os.environ["GPG_TTY"] = "/dev/tty1"
+# Make project root importable
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+import config  # noqa: E402
+from hardware.display import display  # noqa: E402
+from hardware.buttons import ButtonManager  # noqa: E402
+import ui.menus as menus  # noqa: E402
+from ui.screens import render_splash  # noqa: E402
+
+
+def main():
+    # Splash on the LCD (if available) even before buttons init
+    render_splash()
+
+    buttons = ButtonManager()
+    menus.set_button_manager(buttons)
+    buttons.start()
+
+    # Give buttons a moment to settle
+    time.sleep(0.5)
+
+    if buttons.available:
+        menus.main_menu()
+    else:
+        # No GPIO: headless fallback - log and exit cleanly
+        _log("No GPIO available; running headless.")
+        _log("Interfaces: %s" % iface_names())
+        while True:
+            time.sleep(60)
+
+
+def iface_names():
+    from wifite import interface as iface_mod
+    return [n for n, _ in iface_mod.get_interfaces()]
+
+
+def _log(msg):
+    try:
+        with open(config.LOG_FILE, "a") as f:
+            f.write("[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+    except Exception:  # noqa: BLE001
+        pass
+
 
 if __name__ == "__main__":
-    GPIO.setmode(GPIO.BCM)  # Use BCM numbering
-    GPIO.setup(KEY_UP_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY_DOWN_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY_PRESS_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY1_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY2_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    GPIO.setup(KEY3_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-
-    # Show splash screen
-    splash_screen()
-
-    # Start button monitoring thread
-    button_thread = threading.Thread(target=monitor_buttons)
-    button_thread.daemon = True
-    button_thread.start()
-
-    # Start the landing menu
-    landing_menu()
-    
-    GPIO.cleanup()
+    try:
+        main()
+    except Exception as e:  # noqa: BLE001
+        tb = traceback.format_exc()
+        _log("FATAL: %s\n%s" % (e, tb))
+        # Try to show the error on the LCD
+        try:
+            from ui import theme
+            from PIL import ImageFont
+            d = display.begin()
+            d.rectangle((0, 0, config.WIDTH, config.HEIGHT),
+                        fill=theme.background())
+            theme.shadowed(d, "ERROR", (3, 10), ImageFont.load_default(),
+                           color=(255, 0, 0))
+            err = str(e)[:config.MAX_CHARS_PER_LINE]
+            theme.shadowed(d, err, (3, 30), ImageFont.load_default())
+            display.show()
+            time.sleep(8)
+        except Exception:  # noqa: BLE001
+            pass
+        raise

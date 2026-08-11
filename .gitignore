@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.log
+*.bak
+upload_state.json
+cracked.json.upload.tmp

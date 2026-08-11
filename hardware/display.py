@@ -1,0 +1,93 @@
+# -*- coding: utf-8 -*-
+"""LCD wrapper. Initializes the Waveshare 1.44" SPI display and exposes a
+small drawing/rendering API. If the display cannot initialize we keep running
+headless (attacks still work, status is logged).
+"""
+import sys
+import os
+import time
+
+# Make project root importable (so LCD_1in44 / config resolve) regardless of CWD
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+import config  # noqa: E402
+from ui.theme import palette  # noqa: E402  (light draw helpers)
+
+
+class Display:
+    """Thin, failure-tolerant wrapper around the LCD."""
+
+    def __init__(self):
+        self.disp = None
+        self.available = False
+        self.width = config.WIDTH
+        self.height = config.HEIGHT
+        self._canvas = None
+        self._draw = None
+        self._init_hw()
+
+    def _init_hw(self):
+        for mod in ("LCD_1in44",):
+            try:
+                __import__(mod)
+                break
+            except Exception:
+                pass
+        else:
+            self._log("LCD driver module missing; running headless")
+            return
+        try:
+            lcd = sys.modules["LCD_1in44"]
+            self.disp = lcd.LCD()
+            self.disp.LCD_Init(lcd.SCAN_DIR_DFT)
+            self.disp.LCD_Clear()
+            self.available = True
+        except Exception as e:  # noqa: BLE001
+            self.disp = None
+            self.available = False
+            self._log("LCD init failed: %s (running headless)" % e)
+
+    def _log(self, msg):
+        try:
+            with open(config.LOG_FILE, "a") as f:
+                f.write("[%s] %s\n" % (time.strftime("%H:%M:%S"), msg))
+        except Exception:
+            pass
+
+    # -- canvas helpers ----------------------------------------------------
+    def begin(self, bg=None):
+        """Start a frame: return the PIL ImageDraw instance."""
+        from PIL import Image, ImageDraw
+        bg = bg or palette()["background"]
+        self._canvas = Image.new("RGB", (self.width, self.height), bg)
+        self._draw = ImageDraw.Draw(self._canvas)
+        return self._draw
+
+    @property
+    def draw(self):
+        return self._draw
+
+    @property
+    def canvas(self):
+        return self._canvas
+
+    def show(self):
+        """Commit the current canvas to the screen (no-op if headless)."""
+        if self.disp is not None and self._canvas is not None:
+            try:
+                self.disp.LCD_ShowImage(self._canvas, 0, 0)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def clear(self):
+        if self.disp is not None:
+            try:
+                self.disp.LCD_Clear()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+# Module-level singleton
+display = Display()
