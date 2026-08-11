@@ -1,17 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Structured parser for wifite2 output.
+"""Structured parser for wifite2 stdout (kimocoder/wifite2).
 
-Converts wifite's raw (ANSI-colored) stdout into discrete events consumed by
-the UI status screen.
-
-Events emitted through `handler`:
-  on_targets(targets)         targets = [(name, bssid)]
-  on_attack(essid, bssid)     attack starting against a target
-  on_phase(essid, phase)      phase = 'handshake'|'crack'|'pmkid'|'wps'...
-  on_handshake(essid, bssid)  WPA handshake captured
-  on_cracked(essid, psk)      password recovered
-  on_failed(essid)            attack failed for this target
-  on_message(text)            generic status line
+Converts wifite's ANSI-colored output into discrete events for the UI.
+Based on actual wifite2 source: Color.s() token expansion, target.to_str(),
+attack progress via Color.pattack(), and handshake/crack/fail messages.
 """
 import re
 
@@ -19,91 +11,182 @@ ANSI = re.compile(r"\x1b\[[0-?9;]*[mK]")
 
 
 def strip_ansi(s):
+    if s is None:
+        return ""
     return ANSI.sub("", s)
 
 
+# Color tokens that wifite2 emits (expanded by Color.s() before printing)
+# After expansion: {+} -> " [\x1b[2m[\x1b[0m\x1b[32m+\x1b[0m\x1b[2m]\x1b[0m"
+# After strip_ansi: "[+]"
+# {!} -> "[!]", {?} -> "[?]"
+
+
 class OutputParser:
+    """Feeds lines, calls handler events."""
+
     def __init__(self, handler=None):
         self.handler = handler or _null_handler
-        self.current_essid = None
-        self.current_bssid = None
-        self.seen = {}
+        self._current_essid = None
+        self._current_bssid = None
+        self._scanning = False
+        self._target_count = 0
+        self._client_count = 0
 
     def emit(self, name, *args):
         try:
             getattr(self.handler, name)(*args)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     def feed(self, line):
         raw = strip_ansi(line).strip()
         if not raw:
             return
-        self._handle(raw)
+        self._parse(raw)
 
-    def _handle(self, line):
-        low = line.lower()
-        # Target list table line:  " 5    MyNetwork   ...  -55dB  ..."
-        m = re.search(r"^\s*\d+\s+(.{1,32}?)\s+\d+\s+\S+\s+([-]?\d+)dB", line)
+    def _parse(self, line):
+        # ---- Scanning status (carriage-return line) ----
+        # "[+] Scanning [00:12] Targets: 5 Clients: 1 | Ctrl+C to stop"
+        m = re.search(
+            r"\[\+\]\s+Scanning\s.*?Targets:\s*(\d+).*?Clients:\s*(\d+)",
+            line)
         if m:
-            return  # table row - handled by caller keeping a name list
+            self._scanning = True
+            self._target_count = int(m.group(1))
+            self._client_count = int(m.group(2))
+            self.emit("on_scan", self._target_count, self._client_count)
+            return
 
-        # Attacking a specific target
-        m = re.search(r"Starting attacks against (.+?)\s*\((.+)\)\s*$", line)
-        if not m:
-            m = re.search(
-                r"Starting attacks against (([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})",
-                line)
+        # "[+] Scanning (native). Found N target(s), M client(s)..."
+        m = re.search(
+            r"\[\+\]\s+Scanning\s+\(native\).*?Found\s+(\d+)\s+target.*?(\d+)\s+client",
+            line)
         if m:
-            mac = m.group(1)
-            essid = m.group(2) if m.lastindex and m.lastindex >= 2 else None
-            if not re.match(r"([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", essid or ""):
-                self.current_bssid = mac
-                if essid and essid.lower() != "unknown":
-                    self.current_essid = essid
-            self.emit("on_attack", self.current_essid or "?", mac)
+            self._scanning = True
+            self._target_count = int(m.group(1))
+            self._client_count = int(m.group(2))
+            self.emit("on_scan", self._target_count, self._client_count)
             return
 
-        # Crack success - check BEFORE handshake so "Cracked WPA handshake"
-        # doesn't falsely trigger the handshake handler.
-        m = re.search(r"(?:cracked|password)[^:]*[:is]\s*['\"]?([^\s'\"\x1b]+)", line, re.I)
-        if m and ("crack" in low or "password" in low):
-            psk = m.group(1)
-            if psk and psk.lower() not in ("none", "n/a", "null"):
-                self.emit("on_cracked", self.current_essid, psk)
-                return
-        if "Cracked" in line and "N/A" in line.upper():
-            self.emit("on_cracked", self.current_essid, None)
+        # ---- Found a specific target during scan ----
+        # "[+] found target AA:BB:CC:DD:EE:FF (MyNetwork)"
+        m = re.search(
+            r"\[\+\]\s+found target\s+([0-9a-fA-F:]{17})\s+\((.+)\)", line)
+        if m:
+            self.emit("on_found", m.group(2), m.group(1))
             return
 
-        # Handshake capture
-        if "WPA handshake" in line or "Handshake" in line:
-            self.emit("on_handshake", self.current_essid, self.current_bssid)
+        # ---- Attacking a target ----
+        # "[+] (1/3) Starting attacks against AA:BB:CC:DD:EE:FF (MyNetwork)"
+        m = re.search(
+            r"\[\+\]\s+\((\d+)/(\d+)\)\s+Starting attacks against\s+"
+            r"([0-9a-fA-F:]{17})\s+\((.+)\)", line)
+        if m:
+            self._current_bssid = m.group(3)
+            self._current_essid = m.group(4)
+            self.emit("on_attack", self._current_essid, self._current_bssid)
             return
 
-        # Failures
-        if any(k in line for k in ("attack failed", "failed to crack",
-                                   "could not crack", "FAILED")):
-            self.emit("on_failed", self.current_essid)
+        # ---- WPA Handshake captured ----
+        # "[+] Captured handshake" (includes [DUAL] suffix)
+        if re.search(r"\[\+\]\s+Captured handshake", line):
+            self.emit("on_handshake", self._current_essid)
             return
 
-        # Attack phase markers
-        if "pixie" in low:
-            self.emit("on_phase", self.current_essid, "pixie")
-            return
-        if "pmkid" in low:
-            self.emit("on_phase", self.current_essid, "pmkid")
-            return
-        if "cracking" in low or "aircrack" in low or "hashcat" in low:
-            self.emit("on_phase", self.current_essid, "crack")
+        # ---- PMKID captured ----
+        if re.search(r"\[\+\]\s+Captured PMKID", line):
+            self.emit("on_pmkid", self._current_essid)
             return
 
-        # "No targets found"
-        if "no targets" in low or "nothing found" in low:
-            self.emit("on_message", "No targets found")
+        # ---- Attack phase from Color.pattack output ----
+        # Format: "ESSID (-55db) WPS Pixie-Dust: [00:30] Sending M4"
+        m = re.search(
+            r"^(.+?)\s+\([-+]?\d+db\)\s+(\S+)\s+(.+?):\s*(.*)", line)
+        if m:
+            essid = m.group(1)
+            atype = m.group(2)   # "WPS", "WPA", "WEP"
+            name = m.group(3)    # "Pixie-Dust", "Handshake", etc.
+            status = m.group(4)
+            self._current_essid = essid
+            self.emit("on_phase", essid, "%s %s" % (atype, name), status)
             return
 
-        self.emit("on_message", line[:64])
+        # ---- Cracked WPS PIN + PSK ----
+        # "[+] Cracked WPS PIN: 12345678 PSK: password"
+        m = re.search(r"\[\+\]\s+Cracked WPS PIN:\s*(\S+)\s+PSK:\s*(\S+)", line)
+        if m:
+            self.emit("on_cracked", self._current_essid, m.group(2))
+            return
+
+        # "[+] Cracked WPS PIN: 12345678" (no PSK)
+        m = re.search(r"\[\+\]\s+Cracked WPS PIN:\s*(\S+)", line)
+        if m:
+            self.emit("on_cracked", self._current_essid, None)
+            return
+
+        # ---- Cracked WPA handshake key ----
+        # "[+] Cracked WPA Handshake Key: password"
+        # "[+] Cracked WPA/WPA2 Handshake Key: password"
+        m = re.search(
+            r"\[\+\]\s+Cracked (?:WPA(?:/WPA2|3-SAE)?\s+)?Handshake\s+Key:\s*(\S+)",
+            line)
+        if m:
+            self.emit("on_cracked", self._current_essid, m.group(1))
+            return
+
+        # ---- PMKID crack: "Key: password" (standalone or after crack message) ----
+        m = re.search(r"^(?:\[C\])?\s*Key:\s*(\S+)", line)
+        if m:
+            self.emit("on_cracked", self._current_essid, m.group(1))
+            return
+
+        # ---- WEP crack: "Cracked WEP Key: xx:xx:xx:xx:xx" ----
+        m = re.search(r"\[\+\]\s+Cracked (?:WPA(?:/WPA2)?\s+)?Handshake\s+Key:\s*(\S+)", line)
+        if m:
+            self.emit("on_cracked", self._current_essid, m.group(1))
+            return
+
+        # ---- Bully/PIN crack ----
+        # "[+] Cracked PIN: 12345678"
+        m = re.search(r"\[\+\]\s+Cracked (?:PIN|Key):\s*(\S+)", line)
+        if m:
+            self.emit("on_cracked", self._current_essid, m.group(1))
+            return
+
+        # ---- Attack failures ----
+        # "[!] WPA handshake capture FAILED: Timed out after 240 seconds"
+        # "[!] Failed: ..."
+        # "[!] Target timeout: ..."
+        if re.search(r"\[\!\]\s+(?:WPA\s+.*FAILED|Failed|Target timeout)", line):
+            self.emit("on_failed", self._current_essid)
+            return
+
+        # ---- Skipping target ----
+        # "[!] Skipping WPA-Handshake attack on ESSID because --wps-only is set"
+        m = re.search(r"\[\!\]\s+Skipping\s.*attack on\s+(\S+)", line)
+        if m:
+            self.emit("on_skipped", m.group(1))
+            return
+
+        # ---- Client discovered ----
+        m = re.search(r"Discovered (?:new )?client:\s*(.+)", line)
+        if m:
+            self.emit("on_client", m.group(1))
+            return
+
+        # ---- Deauth in progress ----
+        if "Deauth" in line and "Deauthing" and not "deauths" in line:
+            self.emit("on_deauth", self._current_essid)
+            return
+
+        # ---- Cracking message ----
+        if re.search(r"\[\+\]\s+Cracking\s+(?:WPA|WPA/WPA2|WPA3)\s+Handshake", line):
+            self.emit("on_cracking", self._current_essid)
+            return
+
+        # Any other non-empty line
+        self.emit("on_message", line[:72])
 
 
 class _NullHandler:
@@ -111,5 +194,4 @@ class _NullHandler:
         return lambda *a, **k: None
 
 
-def _null_handler(*a, **k):
-    return None
+_null_handler = _NullHandler()

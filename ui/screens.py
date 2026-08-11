@@ -62,44 +62,75 @@ class AttackStatus:
 
     def __init__(self, title="ATTACK"):
         self.title = title
-        self.phase = "starting"
+        self.phase = "waiting"
         self.label = ""
-        self.results = []      # list of (essid, status, psk)
-        self.phase_percent = None
+        self.results = []      # list of (essid, status, detail)
+        self.target_count = 0
+        self.client_count = 0
+        self.percent = 0
         self.start_time = time.time()
 
     def handle_event(self, ev):
-        t = ev.get("type")
-        essid = ev.get("essid")
+        t = ev.get("type", "")
+        essid = ev.get("essid", "")
         if t == "attack":
-            self.phase = "attacking %s" % (essid or "?")
-            self.label = ""
-            if essid:
-                self.results.append([essid, "scan", None])
+            self.phase = "attacking"
+            self._set(essid, "phase")
+            self.percent = 10
         elif t == "handshake":
             self._set(essid, "handshake")
-            self.label = "handshake!"
+            self.label = "handshake captured"
+            self.percent = 50
+        elif t == "pmkid":
+            self._set(essid, "handshake")
+            self.label = "PMKID captured"
+            self.percent = 50
         elif t == "cracked":
-            self._set(essid, "cracked", ev.get("psk"))
-            self.label = "cracked!"
+            psk = ev.get("psk")
+            self._set(essid, "cracked", psk)
+            self.label = "cracked: %s" % (psk or "PIN")
+            self.percent = 100
         elif t == "failed":
             self._set(essid, "failed")
             self.label = "failed"
+            self.percent = 20
+        elif t == "skipped":
+            self._set(essid, "skipped")
+            self.label = "skipped"
         elif t == "phase":
-            self.phase = "%s: %s" % (essid or "?", ev.get("phase", ""))
-            self._set(essid, "phase")
+            phase = ev.get("phase", "")
+            detail = ev.get("detail", "")
+            if essid:
+                self.phase = "%s: %s" % (essid, phase)
+                self._set(essid, "phase")
+            self.label = detail[:24]
+            self.percent = max(self.percent, 5)
+        elif t == "scan":
+            self.target_count = ev.get("targets", 0)
+            self.client_count = ev.get("clients", 0)
+            self.phase = "scanning"
+            self.label = "targets: %d clients: %d" % (
+                self.target_count, self.client_count)
+            self.percent = max(self.percent, 3)
         elif t == "message":
-            self.label = ev.get("text", "")
+            text = ev.get("text", "")
+            if text and len(text) < 40:
+                self.label = text
+        elif t == "cracking":
+            self._set(essid, "cracking")
+            self.label = "cracking..."
+            self.percent = max(self.percent, 60)
 
-    def _set(self, essid, status, psk=None):
+    def _set(self, essid, status, detail=None):
         if not essid:
             return
         for row in self.results:
             if row[0] == essid:
                 row[1] = status
-                row[2] = psk
+                if detail is not None:
+                    row[2] = detail
                 return
-        self.results.append([essid, status, psk])
+        self.results.append([essid, status, detail])
 
     def summary(self):
         c = sum(1 for r in self.results if r[1] == "cracked")
@@ -110,31 +141,32 @@ class AttackStatus:
     def render(self):
         d = display.begin()
         box(d, self.title)
-        # header line: target
         elapsed = int(time.time() - self.start_time)
-        theme.shadowed(d, "%s  %ds" % (self.phase, elapsed), (3, 15),
-                       font(), color=theme.palette()["text"])
+        phase_text = "%s: %ss" % (self.phase, elapsed) if self.phase else "%ds" % elapsed
+        theme.shadowed(d, phase_text[:21], (3, 15), font(),
+                       color=theme.palette()["text"])
         # progress bar
-        theme.progress_bar(d, 3, 28, config.WIDTH - 6, 4, 30)
-        # label
+        theme.progress_bar(d, 3, 28, config.WIDTH - 6, 4,
+                           max(2, self.percent))
         if self.label:
-            theme.shadowed(d, self.label[:config.MAX_CHARS_PER_LINE],
-                           (3, 36), font(), color=theme.accent_color())
-        # counters
+            theme.shadowed(d, self.label[:21], (3, 36), font(),
+                           color=theme.accent_color())
         c, h, f = self.summary()
         theme.shadowed(d, "G:%d H:%d F:%d" % (c, h, f), (3, 48), font())
-        # results
         y = 60
-        for essid, status, psk in self.results[-4:]:
+        for essid, status, detail in self.results[-4:]:
             if y > config.HEIGHT - 12:
                 break
             glyph = {"cracked": "OK", "handshake": "HS",
-                     "failed": "XX"}.get(status, "..")
+                     "failed": "XX", "skipped": "--", "phase": "..",
+                     "cracking": ">>"}.get(status, "..")
             col = theme.accent_color() if status in ("cracked", "handshake") \
                 else theme.highlight_color() if status == "failed" \
                 else theme.palette()["text"]
-            theme.shadowed(d, "%s %s" % (glyph, essid), (3, y), font(),
-                           color=col)
+            text = "%s %s" % (glyph, essid)
+            if detail:
+                text += " " + str(detail)[:8]
+            theme.shadowed(d, text, (3, y), font(), color=col)
             y += 10
         display.show()
 

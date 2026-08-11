@@ -211,6 +211,9 @@ class _Handler:
         self.on_message = message
         self.on_attack = attack
 
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
 
 def record_cracked(essid, psk):
     """Persist a cracked credential to cracked.json (dedup by bssid/essid)."""
