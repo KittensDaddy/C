@@ -216,33 +216,9 @@ def _append_interface_opts(cmd, opts):
                 cmd.append("--random-mac-vendor")
 
 
-from wifite.output import strip_ansi
-
-_RAW_LOG = config.PROJECT_DIR + "/wifite_raw.log"
-_run_start = 0.0
-
-
-def _raw_log(line):
-    """Append wifite's (ANSI-stripped) output for diagnosing parse issues.
-
-    Each line is prefixed with seconds elapsed since the attack started, so
-    you can see where the time actually goes (e.g. a scan that ignores -p).
-    """
-    try:
-        elapsed = time.time() - _run_start if _run_start else 0.0
-        with open(_RAW_LOG, "a") as f:
-            f.write("[+%6.1fs] %s\n" % (elapsed, strip_ansi(line)[:200]))
-    except Exception:  # noqa: BLE001
-        pass
-
-
 def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
                stop_flag=None):
     """Run an attack. Returns AttackResult."""
-    try:
-        open(_RAW_LOG, "w").close()      # fresh log each run
-    except Exception:  # noqa: BLE001
-        pass
     req = AttackRequest(
         interface=iface_mod.iface_name(iface),
         preset=preset,
@@ -264,12 +240,6 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
         return AttackResult(ok=False, error="wifite not found")
     iface_name = req.interface
     start_time = time.time()
-
-    # Anchor the log clock and record the exact argv, so the log shows whether
-    # -p / channel flags were passed and how long each phase really takes.
-    global _run_start
-    _run_start = start_time
-    _raw_log("CMD: " + " ".join(cmd))
 
     # Don't pre-enable monitor mode (airmon-ng is slow and wifite does it on its
     # -i iface anyway). Just release the external adapter from NetworkManager so
@@ -349,7 +319,6 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
             if not chunk:
                 done = True
                 if buf.strip():
-                    _raw_log(buf)
                     _dispatch(parser.feed(buf))
                 break
             buf += chunk.decode("utf-8", "replace")
@@ -358,7 +327,6 @@ def run_attack(iface, preset=None, progress_cb=None, status_cb=None,
             buf = segments.pop()
             for seg in segments:
                 if seg.strip():
-                    _raw_log(seg)
                     _dispatch(parser.feed(seg))
             if progress_cb:
                 progress_cb(None, "elapsed %ds" % int(time.time() - start_time))
