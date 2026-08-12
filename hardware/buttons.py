@@ -77,8 +77,9 @@ class ButtonManager:
             "key2":  config.KEY2_PIN,
             "key3":  config.KEY3_PIN,
         }
-        # Only directional keys auto-repeat; action keys fire once per press.
-        repeatable = {"up", "down", "left", "right"}
+        # Up/down auto-repeat for list scrolling. Left/right are menu
+        # navigation (back/enter) so they fire once per press, like action keys.
+        repeatable = {"up", "down"}
         for name, pin in pins.items():
             self.buttons[name] = Button(pin, repeat=(name in repeatable))
 

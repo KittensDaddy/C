@@ -96,11 +96,12 @@ def start_animator():
 
 
 def _on_button(ev):
-    # Joystick left/right also scroll lists (mapped to up/down); back is KEY1.
+    # Joystick navigates between menus: left = back (like KEY1), right =
+    # enter/select (like the joystick press). Up/down scroll within a list.
     if ev.get("type") == "left":
-        ev["type"] = "up"
+        ev["type"] = "key1"
     elif ev.get("type") == "right":
-        ev["type"] = "down"
+        ev["type"] = "press"
     _evq.put(ev)
 
 
