@@ -130,7 +130,7 @@ DEFAULT_TIMING = [
 
 # Target filters
 DEFAULT_FILTERS = [
-    {"name": "All Bands",     "kind": "bool", "state": False, "flag": "-ab"},
+    {"name": "All Bands",     "kind": "bool", "state": True,  "flag": "-ab"},
     {"name": "2GHz Only",     "kind": "bool", "state": False, "flag": "-2"},
     {"name": "5GHz Only",     "kind": "bool", "state": False, "flag": "-5"},
     {"name": "Clients Only",  "kind": "bool", "state": False, "flag": "--clients-only"},
