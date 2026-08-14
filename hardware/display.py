@@ -94,10 +94,13 @@ class Display:
                 self._frame_open = False
                 self._lock.release()
 
-    def overlay(self, paint_fn):
+    def overlay(self, paint_fn, region=None):
         """Repaint part of the current canvas (e.g. the status bar) and commit,
         without starting a new frame. Used by the animation ticker. Skips if a
-        full-frame render is in progress."""
+        full-frame render is in progress.
+
+        `region=(y0, y1)` pushes only those rows over SPI (partial refresh) — far
+        cheaper than re-encoding the whole 128x128 frame for a tiny strip."""
         from PIL import ImageDraw
         if not self._lock.acquire(timeout=0.05):
             return
@@ -106,7 +109,12 @@ class Display:
                 paint_fn(ImageDraw.Draw(self._canvas))
                 if self.disp is not None:
                     try:
-                        self.disp.LCD_ShowImage(self._canvas, 0, 0)
+                        if region is not None and hasattr(self.disp,
+                                                           "LCD_ShowImageWindow"):
+                            self.disp.LCD_ShowImageWindow(self._canvas, region[0],
+                                                          region[1])
+                        else:
+                            self.disp.LCD_ShowImage(self._canvas, 0, 0)
                     except Exception:  # noqa: BLE001
                         pass
         finally:

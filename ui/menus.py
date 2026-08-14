@@ -55,10 +55,13 @@ def _animator_loop():
     while True:
         if _anim_enabled:
             try:
-                display.overlay(_paint_statusbar)
+                # Partial refresh: only the bottom status strip changes, so push
+                # just those rows instead of the whole frame (avoids SPI lag).
+                display.overlay(_paint_statusbar,
+                                region=(config.HEIGHT - 14, config.HEIGHT))
             except Exception:  # noqa: BLE001
                 pass
-        time.sleep(0.08)          # ~12 fps cat
+        time.sleep(0.16)          # ~6 fps cat (each frame is a full-frame SPI push)
 
 
 def start_animator():
@@ -409,7 +412,10 @@ def run_and_show(preset):
                     return
                 if e and e["type"] in ("press", "key3"):
                     break
-        set_animated(True)      # attack screen has its own status bar
+    # Keep the background animator OFF during the attack: the repaint ticker below
+    # already redraws the whole screen (cat included) ~2x/sec, so leaving the 6 fps
+    # animator running would double the full-frame SPI pushes and cause lag.
+    set_animated(False)
 
     st = AttackStatus("ATTACK")
     st.set_iface(name, drv)
@@ -455,6 +461,7 @@ def run_and_show(preset):
                                stop_flag=stop)
     finally:
         done.set()
+        set_animated(True)      # hand the cat animator back to the menus
 
     # summary
     pv = ProgressView("DONE")

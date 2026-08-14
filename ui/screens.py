@@ -274,7 +274,7 @@ class AttackStatus:
         elevation rules. Frame-rate capped — the engine emits many events/sec, so
         intermediate frames drop; state is kept by handle_event."""
         now = time.time()
-        if not force and now - self._last_paint < 0.1:
+        if not force and now - self._last_paint < 0.2:   # cap full-frame pushes ~5fps
             return
         self._last_paint = now
         self._tick += 1

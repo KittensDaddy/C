@@ -317,3 +317,23 @@ class LCD(config.RaspberryPi):
 		self.digital_write(self.GPIO_DC_PIN, True)
 		for i in range(0,len(pix),4096):
 			self.spi_writebyte(pix[i:i+4096])
+
+	def LCD_ShowImageWindow(self, Image, y0, y1):
+		"""Partial refresh: push only rows [y0,y1) of a full-size Image. Used by
+		the status-bar/cat animator so it doesn't re-encode + SPI the whole frame."""
+		if Image is None:
+			return
+		if Image.size != (self.width, self.height):
+			return self.LCD_ShowImage(Image, 0, 0)
+		y0 = max(0, int(y0)); y1 = min(self.height, int(y1))
+		if y1 <= y0:
+			return
+		img = np.asarray(Image)[y0:y1, :, :]
+		pix = np.zeros((y1 - y0, self.width, 2), dtype=np.uint8)
+		pix[...,[0]] = np.add(np.bitwise_and(img[...,[0]],0xF8),np.right_shift(img[...,[1]],5))
+		pix[...,[1]] = np.add(np.bitwise_and(np.left_shift(img[...,[1]],3),0xE0),np.right_shift(img[...,[2]],3))
+		pix = pix.flatten().tolist()
+		self.LCD_SetWindows(0, y0, self.width, y1)
+		self.digital_write(self.GPIO_DC_PIN, True)
+		for i in range(0,len(pix),4096):
+			self.spi_writebyte(pix[i:i+4096])
