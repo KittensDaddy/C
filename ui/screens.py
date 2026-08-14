@@ -369,12 +369,17 @@ class AttackStatus:
                 theme.hline(d, 58)
 
         # --- results log: newest first, colored glyphs ---
+        # Results area: rows start at 65, 12px apart. The animated status-bar
+        # strip owns rows H-14..H (repainted at 30fps), so the last result row
+        # must end above it: 65 + 12*n + 11 (text height) <= H-15.
         y, bottom = 65, H - 15
+        row_h = 12
+        n_fit = max(1, (bottom - 1 - y - 11) // row_h + 1)
         glyphs = {"cracked": ("◆", theme.accent_color()),
                   "handshake": ("~", theme.highlight_color()),
                   "failed": ("·", theme.dim_color()),
                   "skipped": ("·", theme.dim_color())}
-        for essid, status, cred in reversed(self.results[-6:]):
+        for essid, status, cred in reversed(self.results[-n_fit:]):
             if y > bottom:
                 break
             glyph, col = glyphs.get(status, ("·", theme.dim_color()))
