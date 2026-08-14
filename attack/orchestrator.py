@@ -176,22 +176,29 @@ def _resolve_targets(iface_name, req, preset, status_cb, stop_flag):
 # Plan preview (for ui CommandPreview)
 # ---------------------------------------------------------------------------
 def plan_lines(req, n_targets):
-    atk = []
-    if "wps" in req.attacks:
-        atk.append("WPS pixie(%s)" % config.opt_state(req.attack_modes, "WPS Tool", "reaver"))
-    if "wpa" in req.attacks:
-        atk.append("WPA handshake")
-    if "pmkid" in req.attacks:
-        atk.append("PMKID")
+    """Pre-flight plan — the REAL values for this run, read straight from the
+    request (which already has the launching preset's overrides applied). Each
+    line reflects only the attacks that will actually run."""
     band = {"2": "2.4GHz", "5": "5GHz", "both": "2.4+5GHz"}[req.bands]
-    return [
-        "iface: %s" % req.interface,
-        "attacks: %s" % (", ".join(atk) or "survey"),
-        "band: %s" % band,
-        "targets: %d" % n_targets,
-        "WPS %ss  WPA %ss" % (config.opt_int(req.timing, "WPS Timeout", 180),
-                              config.opt_int(req.timing, "WPA Timeout", 300)),
-    ]
+    lines = ["iface: %s" % req.interface, "band: %s" % band]
+    if "wps" in req.attacks:
+        lines.append("WPS pixie %s %ss" % (
+            config.opt_state(req.attack_modes, "WPS Tool", "reaver"),
+            config.opt_int(req.timing, "WPS Timeout", 180)))
+    if "pmkid" in req.attacks:
+        lines.append("PMKID %ss (clientless)" %
+                     config.opt_int(req.timing, "WPA Timeout", 300))
+    if "wpa" in req.attacks:
+        wpa_t = config.opt_int(req.timing, "WPA Timeout", 300)
+        if config.opt_bool(req.attack_modes, "Deauth", True):
+            lines.append("WPA %ss deauth x%d" % (
+                wpa_t, config.opt_int(req.timing, "Num Deauths", 5)))
+        else:
+            lines.append("WPA %ss passive" % wpa_t)
+    if not (req.attacks & {"wps", "wpa", "pmkid"}):
+        lines.append("survey only (no attack)")
+    lines.append("targets: %s" % (n_targets if n_targets else "scan"))
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +214,7 @@ def _nm_set_managed(iface_name, managed):
         pass
 
 
-def _record_capture(essid, bssid, cap=None, psk=None):
+def _record_capture(essid, bssid, cap=None, psk=None, typ="WPA", pin=None):
     """Persist a capture/crack to cracked.json (dedup by bssid)."""
     entries = load_cracked()
     for e in entries:
@@ -216,10 +223,12 @@ def _record_capture(essid, bssid, cap=None, psk=None):
                 e["cap"] = cap
             if psk and not e.get("psk"):
                 e["psk"] = psk
+            if pin and not e.get("pin"):
+                e["pin"] = pin
             save_cracked(entries)
             return
-    entries.append({"type": "WPA", "date": int(time.time()), "essid": essid,
-                    "bssid": bssid, "pin": None, "psk": psk, "cap": cap})
+    entries.append({"type": typ, "date": int(time.time()), "essid": essid,
+                    "bssid": bssid, "pin": pin, "psk": psk, "cap": cap})
     save_cracked(entries)
 
 
@@ -273,7 +282,8 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                 if r.get("ok"):
                     cred = r.get("psk") or r.get("pin")
                     results["cracked"].append({"essid": r["essid"], "psk": cred})
-                    _record_capture(r["essid"], r["bssid"], psk=cred)
+                    _record_capture(r["essid"], r["bssid"], psk=r.get("psk"),
+                                    pin=r.get("pin"), typ="WPS")
                     continue      # cracked — no need to also grab a handshake
 
             if "pmkid" in req.attacks and pmkid_mod:
@@ -281,7 +291,8 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                 if r.get("ok"):
                     results["handshakes"].append({"essid": r["essid"],
                                                   "cap": r.get("hash")})
-                    _record_capture(r["essid"], r["bssid"], cap=r.get("hash"))
+                    _record_capture(r["essid"], r["bssid"], cap=r.get("hash"),
+                                    typ="PMKID")
                     continue
 
             if "wpa" in req.attacks:
