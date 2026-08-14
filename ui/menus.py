@@ -412,10 +412,10 @@ def run_and_show(preset):
                     return
                 if e and e["type"] in ("press", "key3"):
                     break
-    # Keep the background animator OFF during the attack: the repaint ticker below
-    # already redraws the whole screen (cat included) ~2x/sec, so leaving the 6 fps
-    # animator running would double the full-frame SPI pushes and cause lag.
-    set_animated(False)
+    # Keep the 30 fps background animator ON during the attack too: it partial-
+    # refreshes only the bottom strip (~3ms), so the cat stays smooth here just
+    # like the menus. The ticker below repaints the content area for the countdown.
+    set_animated(True)
 
     st = AttackStatus("ATTACK")
     st.set_iface(name, drv)
