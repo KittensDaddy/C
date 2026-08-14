@@ -584,6 +584,11 @@ def save_preset():
         "attacks": attacks,
         "pixie": "wps" in attacks,
         "wps_time": config.opt_int(config.timing, "WPS Timeout", 180),
+        "wpa_time": config.opt_int(config.timing, "WPA Timeout", 300),
+        "deauth": config.opt_bool(config.attack_modes, "Deauth", True),
+        "num_deauths": config.opt_int(config.timing, "Num Deauths", 5),
+        "tool": config.opt_state(config.attack_modes, "WPS Tool", "reaver"),
+        "band": config.opt_state(config.filters, "Band", "Both"),
         "scan": config.opt_int(config.timing, "Scan Time", 30),
     })
 

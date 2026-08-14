@@ -48,14 +48,50 @@ def _attacks_for(preset):
     return attacks, None
 
 
+# preset key -> (container name, option name). A preset is a self-contained
+# recipe: any key present overrides that option on a COPY of the config for this
+# run only (live config is never touched).
+_PRESET_MAP = {
+    "wps_time":    ("timing", "WPS Timeout"),
+    "wpa_time":    ("timing", "WPA Timeout"),
+    "num_deauths": ("timing", "Num Deauths"),
+    "deauth_sec":  ("timing", "Deauth Sec"),
+    "deauth":      ("attack_modes", "Deauth"),
+    "tool":        ("attack_modes", "WPS Tool"),
+    "ignore_locks": ("attack_modes", "Ignore Locks"),
+    "band":        ("filters", "Band"),
+    "max_targets": ("filters", "Max Targets"),
+    "random_mac":  ("interface_opts", "Random MAC"),
+}
+
+
+def _set_opt(container, name, value):
+    for o in container:
+        if o.get("name") == name:
+            o["state"] = value
+            return
+
+
+def _apply_preset_overrides(preset, snapshots):
+    """Stamp preset keys onto the copied snapshots. `snapshots` is a dict of
+    container-name -> list-of-option-dicts."""
+    if not preset:
+        return
+    for key, (container, opt_name) in _PRESET_MAP.items():
+        if key in preset:
+            _set_opt(snapshots[container], opt_name, preset[key])
+
+
 def build_request(iface, preset=None):
-    attacks, wps_time = _attacks_for(preset)
-    timing = [dict(x) for x in config.timing]
-    if wps_time:
-        for o in timing:
-            if o["name"] == "WPS Timeout":
-                o["state"] = str(wps_time)
-    band = config.opt_state(config.filters, "Band", "Both")
+    attacks, _ = _attacks_for(preset)
+    snapshots = {
+        "attack_modes": [dict(x) for x in config.attack_modes],
+        "timing": [dict(x) for x in config.timing],
+        "filters": [dict(x) for x in config.filters],
+        "interface_opts": [dict(x) for x in config.interface_opts],
+    }
+    _apply_preset_overrides(preset, snapshots)
+    band = config.opt_state(snapshots["filters"], "Band", "Both")
     bands = {"2.4": "2", "5": "5"}.get(band, "both")
     return AttackRequest(
         interface=iface_mod.iface_name(iface),
@@ -65,10 +101,10 @@ def build_request(iface, preset=None):
         exclude_essids=list(config.Runtime.excluded_essids),
         bands=bands,
         attacks=attacks,
-        attack_modes=[dict(x) for x in config.attack_modes],
-        timing=timing,
-        filters=[dict(x) for x in config.filters],
-        interface_opts=[dict(x) for x in config.interface_opts],
+        attack_modes=snapshots["attack_modes"],
+        timing=snapshots["timing"],
+        filters=snapshots["filters"],
+        interface_opts=snapshots["interface_opts"],
     )
 
 

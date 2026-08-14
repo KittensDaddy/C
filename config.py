@@ -132,16 +132,38 @@ DEFAULT_INTERFACE_OPTS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Quick-run presets (native intent, not wifite argv)
+# Quick-run presets — self-contained attack recipes.
 # ---------------------------------------------------------------------------
-# "attacks" = which native attacks to run; "scan" = seconds to discover targets
-# before attacking (Quick Attack pillages every target found in that window).
+# A preset overrides config for that run only (see orchestrator._PRESET_MAP).
+# Optional keys:
+#   attacks      list subset of {"wps","wpa","pmkid"} (run in that order per target)
+#   scan         seconds to discover targets before attacking (Quick Attack)
+#   wps_time     WPS pixie timeout (s)        wpa_time  WPA/PMKID listen window (s)
+#   deauth       True/False                   num_deauths / deauth_sec  deauth rounds
+#   tool         "reaver" | "bully"           ignore_locks  True/False
+#   band         "Both" | "2.4" | "5"         max_targets   int | "All"
+#   random_mac   "Off" | "Full" | "Vendor"    pixie  (informational; WPS is pixie)
 PRESETS = [
-    {"name": "PIXIE Rush",  "desc": "Fast WPS pixie",   "attacks": ["wps"],        "pixie": True, "wps_time": 30, "scan": 15},
-    {"name": "WPA Grab",    "desc": "Handshake capture","attacks": ["wpa"],        "scan": 30},
-    {"name": "WPS + WPA",   "desc": "Both attacks",     "attacks": ["wps", "wpa"], "pixie": True, "wps_time": 60, "scan": 20},
-    {"name": "PIXIE Q60",   "desc": "WPS pixie 60s",    "attacks": ["wps"],        "pixie": True, "wps_time": 60, "scan": 20},
-    {"name": "Survey Only", "desc": "Scan, no attack",  "attacks": [],             "scan": 30},
+    # Clientless — grab a PMKID with no deauth (works without connected clients).
+    {"name": "PMKID Snag",       "desc": "Clientless PMKID, no deauth",
+     "attacks": ["pmkid"], "deauth": False, "wpa_time": 60, "scan": 15},
+    # Aggressive — WPA handshake, hammer clients off to force a reconnect.
+    {"name": "Handshake Hunter", "desc": "WPA + heavy deauth",
+     "attacks": ["wpa"], "deauth": True, "num_deauths": 12, "deauth_sec": 5,
+     "wpa_time": 240, "scan": 20},
+    # Combined — try clientless PMKID first, then deauth for a handshake.
+    {"name": "WPA Blitz",        "desc": "PMKID then deauth HS",
+     "attacks": ["pmkid", "wpa"], "deauth": True, "num_deauths": 10,
+     "wpa_time": 180, "scan": 20},
+    # WPS pixie-dust.
+    {"name": "PIXIE Rush",       "desc": "Fast WPS pixie",
+     "attacks": ["wps"], "pixie": True, "wps_time": 30, "scan": 15},
+    {"name": "WPS + WPA",        "desc": "Pixie then handshake",
+     "attacks": ["wps", "wpa"], "pixie": True, "wps_time": 60, "deauth": True,
+     "scan": 20},
+    # Recon only.
+    {"name": "Survey Only",      "desc": "Scan, no attack",
+     "attacks": [], "scan": 30},
 ]
 
 
