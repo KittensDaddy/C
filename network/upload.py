@@ -18,6 +18,36 @@ def run(cmd, timeout=60):
         return None
 
 
+def upload_file(path, progress_cb=None):
+    """SCP one capture file (.cap/.22000) to the server's handshake dir so it can
+    be cracked there. Returns dict {ok, error}."""
+    if not path or not os.path.exists(path):
+        return {"ok": False, "error": "no capture file"}
+    if progress_cb:
+        progress_cb("Checking tailscale...")
+    if not tailscale.available():
+        return {"ok": False, "error": "tailscale not installed"}
+    if tailscale.status() != "up" and not tailscale.up():
+        return {"ok": False, "error": "tailscale down / needs auth"}
+    if not tailscale.ping_server():
+        return {"ok": False, "error": "server unreachable over tailscale"}
+
+    dest = "%s@%s:%s" % (config.UPLOAD_USER, config.UPLOAD_SERVER,
+                         config.HANDSHAKE_REMOTE_DIR)
+    cmd = ["scp"] + config.UPLOAD_SCP_OPTIONS + [path, dest]
+    if progress_cb:
+        progress_cb("SCP %s..." % os.path.basename(path))
+    for attempt in range(1, 4):
+        r = run(cmd)
+        if r is not None and r.returncode == 0:
+            return {"ok": True, "error": None}
+        if progress_cb:
+            progress_cb("Retry %d/3..." % attempt)
+        time.sleep(5)
+    return {"ok": False, "error": "scp failed: %s" %
+            ((r.stderr if r else "").strip()[:50] or "unknown")}
+
+
 def upload(progress_cb=None):
     """Upload cracked.json to server:/home/sun/handshake/. Returns dict.
 

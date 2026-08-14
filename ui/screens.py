@@ -47,11 +47,18 @@ def _battery_bars(draw, x, y, pct):
 
 
 def status_bar(draw):
-    """Bottom bar: chunky 3-bar colour battery. (The cat free-floats as a
-    separate bouncing overlay drawn by the animator.)"""
-    h = config.HEIGHT
+    """Bottom bar: chunky 3-bar colour battery at left, a cat galloping across
+    the bottom-right."""
+    h, W = config.HEIGHT, config.WIDTH
     pct, _ = battery.battery.read()         # single read per frame
     _battery_bars(draw, 2, h - 11, pct)
+
+    # Running cat loops across the bottom-right half of the screen.
+    x0, x1 = 60, W + cat.W
+    t = time.time()
+    catx = x0 + int((t * 26) % (x1 - x0))   # ~26 px/s to the right, wraps
+    phase = (t * 2.6) % 1.0                 # gait cycles ~2.6 strides/sec
+    cat.draw(draw, catx, h - cat.H, phase, color=(235, 235, 235))
 
 
 def header(draw, title, show_ts=True):
@@ -98,10 +105,10 @@ class AttackStatus:
         self.target_total = 0
         self.cur_essid = ""
         self.cur_phase = ""       # short label: SCAN / WPS / PIXIE / PIN / HS / DEAUTH / CRACK
-        self.cur_timeout = ""     # "0:38" countdown pulled from wifite, if any
-        self.scan_targets = 0     # live count while wifite is still scanning
+        self.cur_timeout = ""     # "0:38" countdown pulled from the engine, if any
+        self.scan_targets = 0     # live count while the engine is still scanning
         self.scan_clients = 0
-        self.started = False      # True once wifite emits its first real event
+        self.started = False      # True once the engine emits its first real event
         self.last_msg = ""        # latest boot/message line, shown while starting
         self.cur_signal = None    # current target power (dBm)
         self.cur_clients = 0      # associated clients on current target
@@ -132,11 +139,11 @@ class AttackStatus:
         t = ev.get("type", "")
         essid = ev.get("essid", "") or ""
         if t == "message":
-            # While wifite boots (monitor mode, killing procs) show its output.
+            # While the engine boots (monitor mode, killing procs) show its output.
             if not self.started and ev.get("text"):
                 self.last_msg = ev["text"][:21]
             return
-        self.started = True       # first real event -> wifite is up and scanning
+        self.started = True       # first real event -> the engine is up and scanning
         if t == "scan":
             self.scan_targets = ev.get("targets", 0)
             self.scan_clients = ev.get("clients", 0)
@@ -217,7 +224,7 @@ class AttackStatus:
         """Monochrome cyberpunk layout: text is white-on-dark with a shadow;
         only the battery and the progress/countdown bars carry colour.
 
-        Frame-rate capped: wifite emits many lines/sec and each would trigger a
+        Frame-rate capped: the engine emits many events/sec and each would trigger a
         full SPI repaint, so intermediate frames are dropped. State is still
         updated by handle_event; the next allowed frame shows the latest."""
         now = time.time()
@@ -241,7 +248,7 @@ class AttackStatus:
         d.line((0, 12, W, 12), fill=WHITE)
 
         if not self.started:
-            # wifite is still initialising — monitor mode, killing conflicting
+            # the engine is still initialising — monitor mode, killing conflicting
             # processes, loading. Show its boot output; scanning hasn't begun.
             theme.shadowed(d, "STARTING %s" % theme.spinner(self._tick),
                            (3, 15), fnt, color=WHITE)
@@ -266,7 +273,7 @@ class AttackStatus:
         theme.shadowed(d, "OK%d" % (c + h), (W - 28, 15), fnt, color=WHITE)
 
         if not attacking:
-            # Scanning: live count that climbs as wifite finds APs / clients.
+            # Scanning: live count that climbs as the engine finds APs / clients.
             theme.shadowed(d, "%s %d APs  %d STA" % (theme.spinner(self._tick),
                            self.scan_targets, self.scan_clients),
                            (3, 27), fnt, color=theme.accent_color())
@@ -342,7 +349,7 @@ def _phase_label(phase, detail):
 
 
 def _timeout(detail):
-    """Pull a live countdown (m:ss) out of wifite's phase detail, if present."""
+    """Pull a live countdown (m:ss) out of the phase detail, if present."""
     detail = detail or ""
     m = re.search(r"timeout[:=]\s*(\d+):(\d+)", detail, re.I)
     if not m:
@@ -360,39 +367,25 @@ def _to_secs(mmss):
     return int(m.group(1)) * 60 + int(m.group(2)) if m else None
 
 
-def _format_cmd(argv, mode, iface, driver):
-    """Break wifite argv into ordered display rows: (text, kind)."""
-    args = list(argv or [])
-    if args and args[0] == "sudo":
-        args = args[1:]
-    if args and "wifite" in args[0]:
-        args = args[1:]
-    rows = [("wifite", "bin"), ((mode or "custom").upper(), "mode")]
+def _format_plan(lines, mode, iface, driver):
+    """Turn a native attack plan (list of 'key: value' strings) into display
+    rows: (text, kind)."""
+    rows = [("ATTACK", "bin"), ((mode or "custom").upper(), "mode")]
     if iface:
         rows.append(("%s %s" % (iface, driver or ""), "iface"))
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a == "-i":                       # iface already shown above
-            i += 2
-            continue
-        if a.startswith("-") and i + 1 < len(args) and not args[i + 1].startswith("-"):
-            rows.append(("%s %s" % (a, args[i + 1]), "arg"))
-            i += 2
-        else:
-            rows.append((a, "arg"))
-            i += 1
+    for ln in (lines or []):
+        rows.append((str(ln), "arg"))
     return rows
 
 
 class CommandPreview:
-    """Cyberpunk pre-flight page: types out the wifite command line by line so
-    the user can recheck it before the attack fires. Monochrome text with hard
+    """Cyberpunk pre-flight page: types out the native attack plan line by line
+    so the user can recheck it before the attack fires. Monochrome text with hard
     shadows; only structural fills (header/scanlines) are non-text. Timing is
     driven by the caller (so a keypress can skip/cancel); this only renders."""
 
-    def __init__(self, argv, mode="custom", iface="", driver=""):
-        self.rows = _format_cmd(argv, mode, iface, driver)
+    def __init__(self, lines, mode="custom", iface="", driver=""):
+        self.rows = _format_plan(lines, mode, iface, driver)
         self._tick = 0
 
     def __len__(self):

@@ -10,7 +10,7 @@ import time
 import shutil
 
 import config
-from wifite import interface as iface_mod
+from attack import interface as iface_mod
 
 
 def _tool(name, *fallbacks):

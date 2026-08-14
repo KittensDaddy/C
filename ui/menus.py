@@ -14,7 +14,8 @@ from ui import theme
 from ui.screens import (display, font, status_bar, header, box,
                         AttackStatus, ProgressView, CommandPreview, render_splash)
 from hardware import battery
-from wifite import interface as iface_mod, scanner as sc, attacker
+from attack import interface as iface_mod, scanner as sc, orchestrator
+from attack import crack as crack_mod, tools as atk_tools
 from cracked_store import load_cracked, load_settings, save_settings
 from network import connect as net_connect, tailscale, upload as net_upload
 
@@ -42,50 +43,22 @@ def set_animated(on):
     _anim_enabled = on
 
 
-# Free-floating cat that bounces off the screen edges like a DVD-logo. Drawn
-# as a sprite over the current canvas, saving/restoring the pixels underneath so
-# it leaves no trail; a full-frame re-render (new canvas id) resets the save.
-_cat = {"x": 8.0, "y": 40.0, "vx": 1.7, "vy": 1.3, "phase": 0.0,
-        "patch": None, "box": (0, 0), "cid": 0}
-
-
-def _cat_tick():
-    from ui import cat
-    W, H = config.WIDTH, config.HEIGHT
-    st = _cat
-
-    def paint(c):
-        if st["patch"] is not None and st["cid"] == id(c):
-            c.paste(st["patch"], st["box"])          # erase previous cat
-        st["phase"] = (st["phase"] + 0.14) % 1.0
-        sp = cat.sprite(st["phase"], flip=st["vx"] < 0, scale=1.2)
-        sw, sh = sp.size
-        st["x"] += st["vx"]
-        st["y"] += st["vy"]
-        if st["x"] <= 0:
-            st["x"], st["vx"] = 0.0, abs(st["vx"])
-        elif st["x"] + sw >= W:
-            st["x"], st["vx"] = float(W - sw), -abs(st["vx"])
-        if st["y"] <= 0:
-            st["y"], st["vy"] = 0.0, abs(st["vy"])
-        elif st["y"] + sh >= H:
-            st["y"], st["vy"] = float(H - sh), -abs(st["vy"])
-        x, y = int(st["x"]), int(st["y"])
-        st["box"], st["cid"] = (x, y), id(c)
-        st["patch"] = c.crop((x, y, x + sw, y + sh)).copy()
-        c.paste(sp, (x, y), sp)
-
-    display.compose(paint)
+def _paint_statusbar(d):
+    # Clear a strip tall enough to cover the cat's ear/tail tips (which reach a
+    # px or two above the bar) so no pixels are left behind between frames.
+    h, w = config.HEIGHT, config.WIDTH
+    d.rectangle((0, h - 14, w, h), fill=theme.background())
+    status_bar(d)
 
 
 def _animator_loop():
     while True:
         if _anim_enabled:
             try:
-                _cat_tick()
+                display.overlay(_paint_statusbar)
             except Exception:  # noqa: BLE001
                 pass
-        time.sleep(0.07)          # ~14 fps cat
+        time.sleep(0.08)          # ~12 fps cat
 
 
 def start_animator():
@@ -152,6 +125,7 @@ def _persist():
     s = load_settings()
     s["theme"] = theme.theme_index()
     s["exclusions"] = list(config.Runtime.excluded_essids)
+    s["exclusions_bssid"] = list(config.Runtime.excluded_bssids)
     save_settings(s)
 
 
@@ -177,9 +151,8 @@ def main_menu():
     while True:
         d = display.begin()
         box(d, "MAIN")
-        labels = ["Scan & Attack", "Quick Attack", "Config", "Cracked",
-                  "Connect", "Upload", "Resume", "SysCheck", "Theme",
-                  "Stealth"]
+        labels = ["Scan & Attack", "Quick Attack", "Crack", "Cracked",
+                  "Connect", "Upload", "Config", "SysCheck"]
         active = 0
         render_list(d, labels, active)
         display.show()
@@ -204,7 +177,10 @@ def main_menu():
                     config.Runtime.target_essid = None
                     config.Runtime.target_bssid = None
                     config.Runtime.target_channel = None
+                    config.Runtime.target_bssids = []
                     quick_attack()
+                elif choice == "Crack":
+                    crack_menu()
                 elif choice == "Config":
                     config_menu()
                 elif choice == "Cracked":
@@ -213,21 +189,13 @@ def main_menu():
                     connect_menu()
                 elif choice == "Upload":
                     do_upload()
-                elif choice == "Resume":
-                    resume_menu()
                 elif choice == "SysCheck":
                     syscheck()
-                elif choice == "Theme":
-                    theme_menu()
-                elif choice == "Stealth":
-                    stealth()
                 d = display.begin()
                 box(d, "MAIN")
                 render_list(d, labels, active)
                 display.show()
                 break
-            elif ev["type"] == "key2":
-                stealth()
 
 
 # --------------------------------------------------------------------------
@@ -282,32 +250,57 @@ def scan_attack():
         time.sleep(2)
         return
 
-    # pick target
-    labels = [n["essid"] for n in nets]
+    # Remember the scan so the orchestrator can look up channel/essid by BSSID.
+    config.Runtime.last_scan = nets
+
+    # Multi-select include: press toggles a target; row 0 launches the attack on
+    # everything selected (a '+' marker flags each chosen AP).
+    selected = set()
+
+    def _labels():
+        rows = ["> Attack (%d)" % len(selected)]
+        for n in nets:
+            mark = "+" if n["bssid"] in selected else " "
+            rows.append("%s%s" % (mark, n["essid"]))
+        return rows
+
     active = 0
-    d = display.begin()
-    box(d, "TARGET")
-    render_list(d, labels, active)
-    display.show()
+    n_rows = len(nets) + 1
+
+    def _render():
+        d = display.begin()
+        box(d, "TARGET")
+        render_list(d, _labels(), active)
+        display.show()
+
+    _render()
     while True:
         ev = wait_event()
         if not ev:
             continue
-        active = _move(active, len(labels), ev)
+        active = _move(active, n_rows, ev)
         if ev["type"] in ("up", "down"):
-            d = display.begin()
-            box(d, "TARGET")
-            render_list(d, labels, active)
-            display.show()
+            _render()
         elif ev["type"] == "press":
-            target = nets[active]
-            config.Runtime.target_essid = target["essid"]
-            config.Runtime.target_bssid = target["bssid"]
-            config.Runtime.target_channel = target.get("channel")
-            config.Runtime.current_bssid = target["bssid"]
-            choose_mode(target["essid"])
-            return
+            if active == 0:
+                if not selected:
+                    status("select a target first")
+                    time.sleep(1)
+                    _render()
+                    continue
+                config.Runtime.target_bssids = list(selected)
+                config.Runtime.target_bssid = None      # use the multi list
+                config.Runtime.target_essid = None
+                choose_mode("%d targets" % len(selected))
+                return
+            n = nets[active - 1]
+            if n["bssid"] in selected:
+                selected.discard(n["bssid"])
+            else:
+                selected.add(n["bssid"])
+            _render()
         elif ev["type"] == "key1":
+            config.Runtime.target_bssids = []
             return
 
 
@@ -374,13 +367,15 @@ def run_and_show(preset):
     name = iface_mod.iface_name(iface)
     drv = iface[1] if isinstance(iface, tuple) else ""
 
-    # Pre-flight: type out the exact wifite command for a recheck. KEY1 aborts,
+    # Pre-flight: type out the native attack plan for a recheck. KEY1 aborts,
     # any other press runs immediately; otherwise it auto-advances at 0.5s/line.
-    cmd = attacker.build_command(iface, preset=preset)
-    if cmd:
+    req = orchestrator.build_request(iface, preset=preset)
+    n_targets = len(config.Runtime.target_bssids) or None
+    lines = orchestrator.plan_lines(req, n_targets if n_targets is not None else 0)
+    if lines:
         flush_events()          # drop the keypress that launched this attack
         set_animated(False)     # preview owns its bottom row (no status bar)
-        prev = CommandPreview(cmd, mode=(preset.get("name") if preset else "custom"),
+        prev = CommandPreview(lines, mode=(preset.get("name") if preset else "custom"),
                               iface=name, driver=drv)
         skipped = False
         for i in range(1, len(prev) + 1):
@@ -431,16 +426,18 @@ def run_and_show(preset):
     monitor = threading.Thread(target=stop_check, daemon=True)
     monitor.start()
 
-    res = attacker.run_attack(iface, preset=preset,
-                              progress_cb=progress, status_cb=status_ev,
-                              stop_flag=stop)
+    res = orchestrator.run(iface, preset=preset,
+                           progress_cb=progress, status_cb=status_ev,
+                           stop_flag=stop)
 
     # summary
     pv = ProgressView("DONE")
     pv.push("OK attack finished" if res.ok else "ERR %s" %
             (res.error or "failed"))
-    for c in res.cracked[-4:]:
-        pv.push("OK %s=%s" % (c["essid"], c["psk"]))
+    for c in res.cracked[-3:]:
+        pv.push("KEY %s=%s" % (c["essid"], c["psk"]))
+    for h in res.handshakes[-3:]:
+        pv.push("HS  %s (Crack menu)" % h.get("essid"))
     pv.render()
     time.sleep(3)
 
@@ -539,16 +536,25 @@ def toggle_section(title, opts):
 
 
 def save_preset():
+    attacks = []
+    if config.opt_bool(config.attack_modes, "WPS Pixie", True):
+        attacks.append("wps")
+    if config.opt_bool(config.attack_modes, "WPA", True):
+        attacks.append("wpa")
+    if config.opt_bool(config.attack_modes, "PMKID", False):
+        attacks.append("pmkid")
     pv = ProgressView("SAVE")
     pv.push("Saved current config")
-    # derive args from config
     pv.push("as: 'Custom %d'" % (len(config.presets)))
     pv.render()
     time.sleep(1.5)
     config.presets.append({
         "name": "Custom %d" % len(config.presets),
         "desc": "saved config",
-        "args": attacker._config_flags(),
+        "attacks": attacks,
+        "pixie": "wps" in attacks,
+        "wps_time": config.opt_int(config.timing, "WPS Timeout", 180),
+        "scan": config.opt_int(config.timing, "Scan Time", 30),
     })
 
 
@@ -579,12 +585,11 @@ def exclude_menu():
         ev.render()
         time.sleep(2)
         return
-    labels = [n["essid"] for n in nets]
     active = 0
     def _labels():
         out = []
         for n in nets:
-            marker = "!" if n["essid"] in config.Runtime.excluded_essids else " "
+            marker = "!" if n["bssid"] in config.Runtime.excluded_bssids else " "
             out.append("%s%s" % (marker, n["essid"]))
         return out
     d = display.begin()
@@ -595,18 +600,18 @@ def exclude_menu():
         ev = wait_event()
         if not ev:
             continue
-        active = _move(active, len(labels), ev)
+        active = _move(active, len(nets), ev)
         if ev["type"] in ("up", "down"):
             d = display.begin()
             box(d, "EXCLUDE")
             render_list(d, _labels(), active)
             display.show()
         elif ev["type"] == "press":
-            essid = labels[active]
-            if essid in config.Runtime.excluded_essids:
-                config.Runtime.excluded_essids.remove(essid)
+            bssid = nets[active]["bssid"]
+            if bssid in config.Runtime.excluded_bssids:
+                config.Runtime.excluded_bssids.remove(bssid)
             else:
-                config.Runtime.excluded_essids.append(essid)
+                config.Runtime.excluded_bssids.append(bssid)
             _persist()
             d = display.begin()
             box(d, "EXCLUDE")
@@ -728,13 +733,43 @@ def do_upload():
 
 
 # --------------------------------------------------------------------------
-# Resume
+# Crack (manual — never automatic). Lists captured handshakes that have no PSK
+# yet and offers on-box or on-server cracking.
 # --------------------------------------------------------------------------
-def resume_menu():
-    labels = ["Resume Latest", "Clean Sessions", "Back"]
+def crack_menu():
+    entries = [e for e in load_cracked() if e.get("cap") and not e.get("psk")]
+    if not entries:
+        status("No captures to crack")
+        time.sleep(1.5)
+        return
+    active = 0
+    labels = [e.get("essid") or e.get("bssid") or "?" for e in entries]
+    d = display.begin()
+    box(d, "CRACK")
+    render_list(d, labels, active)
+    display.show()
+    while True:
+        ev = wait_event()
+        if not ev:
+            continue
+        active = _move(active, len(entries), ev)
+        if ev["type"] in ("up", "down"):
+            d = display.begin()
+            box(d, "CRACK")
+            render_list(d, labels, active)
+            display.show()
+        elif ev["type"] == "press":
+            _crack_where(entries[active])
+            return
+        elif ev["type"] == "key1":
+            return
+
+
+def _crack_where(entry):
+    labels = ["On-box (rockyou)", "On server (upload)"]
     active = 0
     d = display.begin()
-    box(d, "RESUME")
+    box(d, "CRACK")
     render_list(d, labels, active)
     display.show()
     while True:
@@ -744,50 +779,24 @@ def resume_menu():
         active = _move(active, len(labels), ev)
         if ev["type"] in ("up", "down"):
             d = display.begin()
-            box(d, "RESUME")
+            box(d, "CRACK")
             render_list(d, labels, active)
             display.show()
         elif ev["type"] == "press":
-            if labels[active] == "Resume Latest":
-                iface = iface_mod.pick_external(iface_mod.get_interfaces())
-                if iface:
-                    run_and_show({"name": "resume", "args": ["--resume-latest"]})
-                return
-            elif labels[active] == "Clean Sessions":
-                status("cleaned")
-                time.sleep(1)
+            pv = ProgressView("CRACK")
+            if active == 0:
+                pv.push("running aircrack...")
+                pv.render()
+                res = crack_mod.crack_onbox(entry, progress_cb=pv.push)
+                pv.push("KEY %s" % res["psk"] if res.get("ok")
+                        else "ERR %s" % res.get("error"))
+            else:
+                res = crack_mod.crack_server(entry, progress_cb=pv.push)
+                pv.push("OK sent to server" if res.get("ok")
+                        else "ERR %s" % res.get("error"))
+            pv.render()
+            time.sleep(3)
             return
-        elif ev["type"] == "key1":
-            return
-
-
-# --------------------------------------------------------------------------
-# Theme picker
-# --------------------------------------------------------------------------
-def theme_menu():
-    names = [t["name"] for t in config.COLOR_THEMES]
-    active = theme.theme_index()
-    d = display.begin()
-    box(d, "THEME")
-    render_list(d, names, active)
-    display.show()
-    while True:
-        ev = wait_event()
-        if not ev:
-            continue
-        active = _move(active, len(names), ev)
-        if ev["type"] in ("up", "down"):
-            d = display.begin()
-            box(d, "THEME")
-            render_list(d, names, active)
-            display.show()
-        elif ev["type"] == "press":
-            theme.set_theme(active)
-            _persist()
-            d = display.begin()
-            box(d, "THEME")
-            render_list(d, names, active)
-            display.show()
         elif ev["type"] == "key1":
             return
 
@@ -797,8 +806,12 @@ def theme_menu():
 # --------------------------------------------------------------------------
 def syscheck():
     pv = ProgressView("SYSCHECK")
-    from wifite.attacker import _which_wifite
-    pv.push("wifite: %s" % ("ok" if _which_wifite() else "MISSING"))
+    missing = [name for name, path in atk_tools.REQUIRED_TOOLS.items()
+               if not atk_tools.tool_ok(path)]
+    if missing:
+        pv.push("tools MISSING: %s" % ", ".join(missing)[:18])
+    else:
+        pv.push("attack tools: ok")
     pv.push("lgpio: %s" % ("ok" if _import_ok("lgpio") else "MISSING"))
     pv.push("tailscale: %s" % tailscale.status())
     ifaces = iface_mod.get_interfaces()
@@ -815,22 +828,6 @@ def _import_ok(mod):
         return True
     except Exception:  # noqa: BLE001
         return False
-
-
-# --------------------------------------------------------------------------
-# Stealth (simple pong)
-# --------------------------------------------------------------------------
-def stealth():
-    d = display.begin()
-    box(d, "STEALTH")
-    # minimal: show a message, exit on any button
-    theme.shadowed(d, "covert", (10, config.HEIGHT // 2), font(),
-                   color=theme.accent_color())
-    display.show()
-    while True:
-        ev = wait_event(1.0)
-        if ev:
-            return
 
 
 def status(msg):

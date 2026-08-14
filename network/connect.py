@@ -9,7 +9,7 @@ import time
 import re
 
 import config
-from wifite import interface as iface_mod
+from attack import interface as iface_mod
 
 
 def run(cmd, timeout=25):

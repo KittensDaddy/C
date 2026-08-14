@@ -34,6 +34,8 @@ def _restore_settings():
         theme.set_theme(s["theme"])
     if "exclusions" in s and isinstance(s["exclusions"], list):
         config.Runtime.excluded_essids = s["exclusions"]
+    if "exclusions_bssid" in s and isinstance(s["exclusions_bssid"], list):
+        config.Runtime.excluded_bssids = s["exclusions_bssid"]
 
 
 def main():
@@ -61,7 +63,7 @@ def main():
 
 
 def iface_names():
-    from wifite import interface as iface_mod
+    from attack import interface as iface_mod
     return [n for n, _ in iface_mod.get_interfaces()]
 
 

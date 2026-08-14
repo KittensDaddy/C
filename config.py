@@ -60,12 +60,10 @@ HANDSHAKE_REMOTE_DIR = "/home/sun/handshake"
 UPLOAD_STATE_FILE = DATA_DIR + "/upload_state.json"
 LOG_FILE = PROJECT_DIR + "/wifibox.log"
 
-# Wifite binary lookup order
-WIFITE_BIN_CANDIDATES = (
-    "/usr/sbin/wifite",
-    "/usr/local/bin/wifite",
-    "/usr/bin/wifite",
-)
+# Native engine: where captured handshakes / PMKID hashes are written, and the
+# wordlist used for on-box cracking (manual only — never auto-run).
+CAPTURE_DIR   = DATA_DIR + "/captures"
+WORDLIST_PATH = "/usr/share/wordlists/rockyou.txt"
 
 # Server for uploads (reached over tailscale)
 UPLOAD_SERVER = "100.124.251.39"
@@ -103,67 +101,73 @@ BATTERY_MID  = 30   # >=  -> orange, else red
 # kind: "bool" | "cycle"
 # ---------------------------------------------------------------------------
 DEFAULT_ATTACK_MODES = [
-    {"name": "WPS",        "kind": "bool",  "state": True,  "flag": "--no-wps", "invert": True},
-    {"name": "Pixie Dust", "kind": "bool",  "state": True,  "flag": "--pixie"},
-    {"name": "Null PIN",   "kind": "bool",  "state": True,  "flag": "--no-nullpin", "invert": True},
-    {"name": "WPS Tool",   "kind": "cycle", "state": "reaver", "values": ["reaver", "bully"], "flag": None},
-    {"name": "Ignore Locks","kind": "bool", "state": False, "flag": "--ignore-locks"},
-    {"name": "WPA",        "kind": "bool",  "state": True,  "flag": "--no-wpa", "invert": True},
-    {"name": "PMKID",      "kind": "bool",  "state": True,  "flag": "--no-pmkid", "invert": True},
-    {"name": "Deauth",     "kind": "bool",  "state": True,  "flag": None},
-    {"name": "No Deauth",  "kind": "bool",  "state": False, "flag": "--nodeauths"},
-    {"name": "WPA3",       "kind": "bool",  "state": False, "flag": "--wpa3"},
-    {"name": "Force SAE",  "kind": "bool",  "state": False, "flag": "--force-sae"},
-    {"name": "WEP",        "kind": "bool",  "state": False, "flag": "--wep"},
+    {"name": "WPA",         "kind": "bool",  "state": True},   # capture handshake
+    {"name": "WPS Pixie",   "kind": "bool",  "state": True},   # reaver -K pixie-dust
+    {"name": "WPS Tool",    "kind": "cycle", "state": "reaver", "values": ["reaver", "bully"]},
+    {"name": "Deauth",      "kind": "bool",  "state": True},   # deauth clients during WPA capture
+    {"name": "Ignore Locks","kind": "bool",  "state": False},  # keep going when the AP WPS-locks
+    {"name": "PMKID",       "kind": "bool",  "state": False},  # optional hcxdumptool PMKID
 ]
 
-# Timing options (cycle pickers)
+# Timing options — fed straight to the engine (seconds). "Off" disables where noted.
 DEFAULT_TIMING = [
-    {"name": "Scan Time",     "kind": "cycle", "state": "30", "values": [str(i) for i in range(10, 101, 10)]},
-    {"name": "WPS Timeout",   "kind": "cycle", "state": "30", "values": ["Off"] + [str(i) for i in range(30, 301, 30)]},
-    {"name": "WPA Timeout",   "kind": "cycle", "state": "500", "values": ["Off"] + [str(i) for i in range(60, 901, 60)]},
-    {"name": "Deauth Sec",    "kind": "cycle", "state": "10", "values": ["Off"] + [str(i) for i in range(1, 31)]},
-    {"name": "PMKID Timeout", "kind": "cycle", "state": "60", "values": ["Off"] + [str(i) for i in range(30, 301, 30)]},
-    {"name": "Num Deauths",   "kind": "cycle", "state": "5",  "values": ["Off"] + [str(i) for i in range(1, 21)]},
-    {"name": "Loop",          "kind": "bool",  "state": False, "flag": "-inf"},
+    {"name": "Scan Time",   "kind": "cycle", "state": "30",  "values": [str(i) for i in range(10, 101, 10)]},
+    {"name": "WPS Timeout", "kind": "cycle", "state": "180", "values": [str(i) for i in range(30, 361, 30)]},
+    {"name": "WPA Timeout", "kind": "cycle", "state": "300", "values": [str(i) for i in range(60, 901, 60)]},
+    {"name": "Deauth Sec",  "kind": "cycle", "state": "10",  "values": ["Off"] + [str(i) for i in range(2, 31, 2)]},
+    {"name": "Num Deauths", "kind": "cycle", "state": "5",   "values": [str(i) for i in range(1, 21)]},
 ]
 
 # Target filters
 DEFAULT_FILTERS = [
-    {"name": "All Bands",     "kind": "bool", "state": True,  "flag": "-ab"},
-    {"name": "2GHz Only",     "kind": "bool", "state": False, "flag": "-2"},
-    {"name": "5GHz Only",     "kind": "bool", "state": False, "flag": "-5"},
-    {"name": "Clients Only",  "kind": "bool", "state": False, "flag": "--clients-only"},
-    {"name": "Min Signal",    "kind": "cycle", "state": "Off", "values": ["Off"] + [str(i) for i in range(0, -91, -10)], "flag": "--power"},
-    {"name": "Max Targets",   "kind": "cycle", "state": "All", "values": ["All", "1", "2", "3", "5", "10"], "flag": "--first"},
-    {"name": "Ignore Cracked","kind": "bool", "state": False, "flag": "-ic"},
-    {"name": "Ignore Captured","kind": "bool", "state": False, "flag": "--ignore-captured"},
-    {"name": "Skip Crack",    "kind": "bool", "state": False, "flag": "--skip-crack"},
+    {"name": "Band",          "kind": "cycle", "state": "Both", "values": ["Both", "2.4", "5"]},
+    {"name": "Min Signal",    "kind": "cycle", "state": "Off",  "values": ["Off"] + [str(i) for i in range(-30, -91, -10)]},
+    {"name": "Max Targets",   "kind": "cycle", "state": "All",  "values": ["All", "1", "2", "3", "5", "10"]},
+    {"name": "Ignore Cracked","kind": "bool",  "state": False},
 ]
 
 # Interface options
 DEFAULT_INTERFACE_OPTS = [
-    {"name": "Random MAC",   "kind": "cycle", "state": "Off", "values": ["Off", "Full", "Vendor"], "flag": "--mac"},
-    {"name": "Dual Interface","kind": "bool", "state": False, "flag": "--dual-interface"},
-    {"name": "Kill Conflicts","kind": "bool", "state": False, "flag": "--kill"},
-    {"name": "Daemon",       "kind": "bool",  "state": False, "flag": "--daemon"},
-    {"name": "Use Hcxdump",  "kind": "bool",  "state": False, "flag": "--hcxdump"},
+    {"name": "Random MAC", "kind": "cycle", "state": "Off", "values": ["Off", "Full", "Vendor"]},
 ]
 
 # ---------------------------------------------------------------------------
-# Quick-run presets
+# Quick-run presets (native intent, not wifite argv)
 # ---------------------------------------------------------------------------
-# "scan" = seconds to scan before auto-attacking (wifite -p / pillage). Required
-# for headless operation: without it wifite waits forever for a keypress.
+# "attacks" = which native attacks to run; "scan" = seconds to discover targets
+# before attacking (Quick Attack pillages every target found in that window).
 PRESETS = [
-    {"name": "PIXIE Rush",     "desc": "Fast WPS pixie dust", "scan": 15, "args": ["--wps-only", "--pixie", "--wps-time", "30"]},
-    {"name": "WPA Grab",       "desc": "Passive handshake",   "scan": 30, "args": ["--no-wps", "--no-pmkid", "--nodeauths"]},
-    {"name": "PMKID Hunter",   "desc": "PMKID capture",       "scan": 20, "args": ["--no-wps", "--pmkid"]},
-    {"name": "Full Power",     "desc": "All attacks, all bands", "scan": 30, "args": ["-ab"]},
-    {"name": "PIXIE Q60",      "desc": "WPS pixie 60s",       "scan": 20, "args": ["--wps-only", "--pixie", "--wps-time", "60"]},
-    {"name": "Survey Only",    "desc": "No crack, no deauth", "scan": 30, "args": ["--skip-crack", "--nodeauths"]},
-    {"name": "WPA3 Focus",     "desc": "WPA3 only",           "scan": 25, "args": ["--wpa3"]},
+    {"name": "PIXIE Rush",  "desc": "Fast WPS pixie",   "attacks": ["wps"],        "pixie": True, "wps_time": 30, "scan": 15},
+    {"name": "WPA Grab",    "desc": "Handshake capture","attacks": ["wpa"],        "scan": 30},
+    {"name": "WPS + WPA",   "desc": "Both attacks",     "attacks": ["wps", "wpa"], "pixie": True, "wps_time": 60, "scan": 20},
+    {"name": "PIXIE Q60",   "desc": "WPS pixie 60s",    "attacks": ["wps"],        "pixie": True, "wps_time": 60, "scan": 20},
+    {"name": "Survey Only", "desc": "Scan, no attack",  "attacks": [],             "scan": 30},
 ]
+
+
+# ---------------------------------------------------------------------------
+# Option accessors — read a value out of a config snapshot (list of dicts) by
+# option name. Pure functions so the engine can read a frozen AttackRequest.
+# ---------------------------------------------------------------------------
+def opt_state(container, name, default=None):
+    for o in container:
+        if o.get("name") == name:
+            return o.get("state", default)
+    return default
+
+
+def opt_bool(container, name, default=False):
+    return bool(opt_state(container, name, default))
+
+
+def opt_int(container, name, default):
+    val = opt_state(container, name, None)
+    if val in (None, "Off", "All"):
+        return default
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
 
 # ---------------------------------------------------------------------------
 # Runtime state (mutable singletons)
@@ -177,14 +181,17 @@ class Runtime:
     current_essid = None
     current_bssid = None
     excluded_essids = []
+    excluded_bssids = []           # BSSID-level exclusions (native multi-exclude)
     target_essid = None
     target_bssid = None
     target_channel = None          # channel of the picked target (speeds -c lock)
+    target_bssids = []             # multi-select include list (Scan & Attack)
+    last_scan = []                 # most recent scan result (list of net dicts)
     stealth_active = False
 
 
-# Safety cap (seconds) for a single-target attack: wifite auto-attacks the moment
-# it sees the target, but this bounds the scan if the target isn't found.
+# Safety cap (seconds) for confirming a single picked target is on air before
+# attacking it (bounds the pre-attack airodump lock if the target isn't seen).
 TARGETED_SCAN_CAP = 30
 
 

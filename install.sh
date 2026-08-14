@@ -12,11 +12,8 @@ set -euo pipefail
 PROJECT_DIR="/home/sun/C"
 USER="${SUDO_USER:-pi}"
 [ "$USER" = "root" ] && USER="pi"
-REPO_URL="https://github.com/kimocoder/wifite2"
-WIFITE_COMMIT="cc3c82f8f2f674b4e355a58f15555a63e25f175a"
-WIFITE_DIR="/opt/wifite2"
 LOG="/tmp/wifibox-install.log"
-TOTAL_STEPS=10
+TOTAL_STEPS=9
 
 say()  { echo -e "\e[1;34m[wifibox]\e[0m $*"; }
 ok()   { echo -e "\e[1;32m     ✓\e[0m $*"; }
@@ -155,9 +152,10 @@ install_packages() {
         python3 python3-pip python3-setuptools
         python3-pil python3-numpy
         python3-lgpio python3-spidev python3-smbus2 i2c-tools
-        aircrack-ng reaver bully hashcat hcxtools
-        tshark macchanger wireless-tools iw iproute2
+        aircrack-ng reaver bully hashcat hcxtools hcxdumptool
+        macchanger wireless-tools iw iproute2
         network-manager dnsutils curl git
+        wordlists
         tailscale
     )
     local total=${#pkgs[@]}
@@ -174,56 +172,18 @@ install_packages() {
         fi
     done
     echo
+    # The `wordlists` package ships rockyou gzipped; unpack it for on-box cracking.
+    if [[ -f /usr/share/wordlists/rockyou.txt.gz && ! -f /usr/share/wordlists/rockyou.txt ]]; then
+        gunzip -k /usr/share/wordlists/rockyou.txt.gz >> "$LOG" 2>&1 || true
+    fi
+    [[ -f /usr/share/wordlists/rockyou.txt ]] && ok "rockyou wordlist ready" \
+        || warn "rockyou wordlist not found (on-box crack will be unavailable)"
     ok "All packages processed (see $LOG for details)"
 }
 
-# ---- [4] wifite2 ----------------------------------------------------------
-install_wifite() {
-    step 4 "Installing wifite2 (pinned $WIFITE_COMMIT)..."
-    if [[ ! -d "$WIFITE_DIR" ]]; then
-        _start_spin "cloning wifite2..."
-        if git clone "$REPO_URL" "$WIFITE_DIR" >> "$LOG" 2>&1; then
-            ( cd "$WIFITE_DIR" && git checkout "$WIFITE_COMMIT" ) >> "$LOG" 2>&1
-            _end_spin "wifite2 cloned @ $WIFITE_COMMIT"
-        else
-            _end_spin "clone failed"
-            fail "git clone wifite2 failed"
-            return
-        fi
-    else
-        _start_spin "verifying wifite2..."
-        local current
-        current=$(cd "$WIFITE_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "?")
-        if [[ "$current" != "${WIFITE_COMMIT:0:7}" ]]; then
-            ( cd "$WIFITE_DIR" && git fetch origin && git checkout "$WIFITE_COMMIT" ) >> "$LOG" 2>&1
-            _end_spin "wifite2 updated @ ${WIFITE_COMMIT:0:7}"
-        else
-            _end_spin "wifite2 already @ ${WIFITE_COMMIT:0:7}"
-        fi
-    fi
-
-    _start_spin "python3 setup.py install..."
-    if ( cd "$WIFITE_DIR" && \
-         python3 setup.py install >> "$LOG" 2>&1 ); then
-        _end_spin "wifite2 installed"
-    else
-        _end_spin "install failed"
-        fail "setup.py install failed (see $LOG)"
-        return
-    fi
-
-    if command -v wifite >/dev/null; then
-        local ver
-        ver=$(wifite --version 2>/dev/null | head -1 || echo "?")
-        ok "wifite2 ready ($ver)"
-    else
-        warn "wifite not found in PATH"
-    fi
-}
-
-# ---- [5] internal wifi naming ---------------------------------------------
+# ---- [4] internal wifi naming ---------------------------------------------
 name_internal_wifi() {
-    step 5 "Naming internal WiFi -> wl0..."
+    step 4 "Naming internal WiFi -> wl0..."
     local f="/etc/systemd/network/10-wlan_internal.link"
     cat > "$f" <<'EOF'
 [Match]
@@ -237,20 +197,20 @@ EOF
 }
 
 
-# ---- [6] sudoers ----------------------------------------------------------
+# ---- [5] sudoers ----------------------------------------------------------
 setup_sudoers() {
-    step 6 "Configuring passwordless sudo..."
+    step 5 "Configuring passwordless sudo..."
     local f="/etc/sudoers.d/wifibox"
     cat > "$f" <<EOF
-$USER ALL=(ALL) NOPASSWD: /usr/sbin/airmon-ng, /usr/sbin/iw, /usr/sbin/iwconfig, /usr/bin/nmcli, /usr/sbin/ip, /usr/bin/macchanger, /usr/sbin/wifite, /usr/bin/wifite, /usr/bin/tailscale
+$USER ALL=(ALL) NOPASSWD: /usr/sbin/airmon-ng, /usr/sbin/airodump-ng, /usr/sbin/aireplay-ng, /usr/bin/aircrack-ng, /usr/bin/reaver, /usr/bin/bully, /usr/bin/hcxdumptool, /usr/sbin/iw, /usr/sbin/iwconfig, /usr/bin/nmcli, /usr/sbin/ip, /usr/bin/macchanger, /usr/bin/tailscale
 EOF
     chmod 440 "$f"
     ok "sudoers: $f"
 }
 
-# ---- [7] systemd service --------------------------------------------------
+# ---- [6] systemd service --------------------------------------------------
 setup_service() {
-    step 7 "Installing auto-start service..."
+    step 6 "Installing auto-start service..."
     local f="/etc/systemd/system/wifibox.service"
     cat > "$f" <<EOF
 [Unit]
@@ -275,9 +235,9 @@ EOF
     ok "wifibox.service enabled (auto-start on boot)"
 }
 
-# ---- [8] tailscale ----------------------------------------------------------
+# ---- [7] tailscale ----------------------------------------------------------
 setup_tailscale() {
-    step 8 "Tailscale setup..."
+    step 7 "Tailscale setup..."
     if ! command -v tailscale >/dev/null; then
         warn "tailscale not installed."
         return
@@ -292,9 +252,9 @@ setup_tailscale() {
     fi
 }
 
-# ---- [9] project files ----------------------------------------------------
+# ---- [8] project files ----------------------------------------------------
 setup_project() {
-    step 9 "Setting up project files..."
+    step 8 "Setting up project files..."
     mkdir -p "$PROJECT_DIR"
     if [[ -f "$PROJECT_DIR/main.py" ]]; then
         chown -R "$USER":"$USER" "$PROJECT_DIR" 2>/dev/null || true
@@ -309,20 +269,24 @@ setup_project() {
     fi
 }
 
-# ---- [10] verification ------------------------------------------------------
+# ---- [9] verification ------------------------------------------------------
 verify() {
-    step 10 "Verifying installation..."
+    step 9 "Verifying installation..."
     local pass=0 failc=0
     local check
     declare -A checks=(
-        ["wifite"]="command -v wifite"
+        ["airodump-ng"]="command -v airodump-ng"
+        ["aireplay-ng"]="command -v aireplay-ng"
         ["aircrack-ng"]="command -v aircrack-ng"
+        ["reaver"]="command -v reaver"
+        ["bully"]="command -v bully"
+        ["hcxdumptool"]="command -v hcxdumptool"
+        ["hashcat"]="command -v hashcat"
         ["lgpio"]="python3 -c 'import lgpio'"
         ["spidev"]="python3 -c 'import spidev'"
         ["smbus2"]="python3 -c 'import smbus2'"
         ["PIL"]="python3 -c 'from PIL import Image'"
         ["tailscale"]="command -v tailscale"
-        ["aresolve"]="command -v aircrack-ng"
     )
     # project import
     if python3 -c "import sys; sys.path.insert(0,'$PROJECT_DIR'); import main" 2>/dev/null; then
@@ -333,7 +297,7 @@ verify() {
         failc=$((failc+1))
     fi
 
-    for label in wifite aircrack-ng lgpio spidev smbus2 PIL tailscale; do
+    for label in airodump-ng aireplay-ng aircrack-ng reaver bully hcxdumptool hashcat lgpio spidev smbus2 PIL tailscale; do
         if eval "${checks[$label]}" 2>/dev/null; then
             ok "$label"
             pass=$((pass+1))
@@ -362,7 +326,6 @@ main() {
     check_platform
     enable_hardware
     install_packages
-    install_wifite
     name_internal_wifi
     setup_sudoers
     setup_service

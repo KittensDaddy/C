@@ -1,17 +1,20 @@
 # wifi-box v2
 
 Portable WiFi security testing box for Raspberry Pi with a 1.44" SPI LCD and
-GPIO controls. Runs [wifite2](https://github.com/kimocoder/wifite2), captures
-handshakes, cracks PSKs, and uploads results to your server over Tailscale.
+GPIO controls. A native attack engine drives `airodump-ng`/`aireplay-ng` (WPA
+handshake capture) and `reaver`/`bully` (WPS pixie-dust) directly — no wifite2,
+no terminal-output scraping. Captures handshakes, cracks PSKs on demand (on-box
+or on your server), and uploads results over Tailscale.
 
 Built for **Raspberry Pi OS Bookworm Lite (64-bit)**.
 
 ## Features
 
-- Nested text-based menu UI (themeable, battery + Tailscale status bar)
-- WPA/WPA2/WPA3/WPS/Pixie/PMKID attacks via wifite2 presets & custom config
+- Text-based menu UI (battery + Tailscale status bar)
+- Native WPA handshake capture + WPS pixie-dust (optional PMKID), 2.4 & 5 GHz
+- Multi-BSSID target select (include) and multi-BSSID exclude
 - Structured live attack status screen (targets, handshakes, cracked, failed)
-- Smart error fallbacks (interface detection, scan methods, monitor mode, connect, upload)
+- Manual cracking only — on-box (`aircrack-ng`, rockyou) or offload to the server
 - Uses external USB WiFi for attacks; internal card (wl0) left alone
 - Connect to a known (cracked) network, then connect to Tailscale and SCP results
 - Auto-start via systemd
@@ -22,18 +25,16 @@ Built for **Raspberry Pi OS Bookworm Lite (64-bit)**.
 cd ~/C && sudo bash install.sh
 ```
 
-The script (10 steps, shows progress + spinners):
+The script (9 steps, shows progress + spinners):
 1. Checks platform (Pi model, OS version)
 2. Enables SPI + I2C in `/boot/config.txt`
-3. Installs all system packages via apt
-4. Clones wifite2 (pinned commit) and runs `python3 setup.py install`
-5. Names internal WiFi `wl0` via systemd link file
-6. Grants passwordless sudo for attack tools
-7. Creates systemd auto-start service
-8. Guides Tailscale setup
-9. Sets up project directory + cracked.json
-10. Verifies all tools and modules
-11. Optionally creates an SD card image
+3. Installs all system packages via apt (incl. `hcxdumptool` + rockyou wordlist)
+4. Names internal WiFi `wl0` via systemd link file
+5. Grants passwordless sudo for attack tools
+6. Creates systemd auto-start service
+7. Guides Tailscale setup
+8. Sets up project directory + cracked.json
+9. Verifies all tools and modules
 
 ### After install
 
@@ -57,7 +58,7 @@ The Waveshare 1.44" LCD HAT has a joystick and 3 buttons:
 | **Joystick Press** | Select / activate / toggle |
 | **Joystick Left** | Back (same as KEY1) |
 | **KEY1** (top button) | Back to previous menu |
-| **KEY2** (middle button) | Toggle option / Stealth mode |
+| **KEY2** (middle button) | Toggle option |
 | **KEY3** (bottom button) | Stop current attack |
 
 ### Screen layout
@@ -86,7 +87,7 @@ The Waveshare 1.44" LCD HAT has a joystick and 3 buttons:
 #### First boot
 
 1. Power on → splash screen → **MAIN** menu.
-2. Check **SysCheck** — verify wifite, interfaces, Tailscale.
+2. Check **SysCheck** — verify attack tools, interfaces, Tailscale.
 3. Plug in external USB WiFi adapter. Internal WiFi stays as `wl0`.
 
 #### Attack a network
@@ -96,10 +97,22 @@ The Waveshare 1.44" LCD HAT has a joystick and 3 buttons:
 2. The box scans for 30s, then attacks all targets found.
 3. Live status screen shows progress. Press KEY3 to cancel.
 
-**Method B — Scan & Attack (pick one target):**
+**Method B — Scan & Attack (pick targets):**
 1. **Scan & Attack** → scans for networks.
-2. Select a target from the list → choose "Run: Current Config" or a preset.
-3. Attack starts against only that target. No pillage (`-p`) — cleaner.
+2. Press to toggle a `+` on each target you want (select as many as you like);
+   the top **Attack (N)** row launches once you've chosen.
+3. Choose "Run: Current Config" or a preset → attacks only the selected BSSIDs.
+
+Use **Config → Exclude SSIDs** to mark BSSIDs to skip during a Quick Attack scan.
+
+#### Cracking (manual)
+
+Captured handshakes are stored but never cracked automatically. Open **Crack**,
+pick a capture, then choose:
+- **On-box (rockyou)** — runs `aircrack-ng` against the local wordlist (slow on a Pi).
+- **On server (upload)** — SCPs the `.cap`/`.22000` to your server to crack there.
+
+WPS pixie-dust recovers the PSK directly, so those show up already cracked.
 
 #### Viewing results
 
@@ -126,11 +139,11 @@ connect to that network. Entries without a password show as `(no-psk)`.
 
 | Submenu | What toggles |
 |---------|-------------|
-| **Attack Modes** | WPS, Pixie Dust, Null PIN, WPS Tool (reaver/bully), Ignore Locks, WPA, PMKID, Deauth, No Deauth, WPA3, Force SAE, WEP |
-| **Timing** | Scan Time, WPS/WPA/Deauth/PMKID timeouts, Num Deauths, Loop mode |
-| **Target Filters** | Band selection, Clients Only, Min Signal, Max Targets, Ignore Cracked, Skip Crack |
-| **Interface** | Random MAC, Dual Interface, Kill Conflicts, Daemon, Hcxdump |
-| **Exclude SSIDs** | Scan → toggle SSIDs to exclude from attacks |
+| **Attack Modes** | WPA, WPS Pixie, WPS Tool (reaver/bully), Deauth, Ignore Locks, PMKID |
+| **Timing** | Scan Time, WPS Timeout, WPA Timeout, Deauth Sec, Num Deauths |
+| **Target Filters** | Band (Both/2.4/5), Min Signal, Max Targets, Ignore Cracked |
+| **Interface** | Random MAC |
+| **Exclude SSIDs** | Scan → toggle BSSIDs to exclude from attacks |
 
 Toggle style: press to cycle. Booleans show a **green circle** (ON) or **red circle** (OFF).
 Cycle values show the current option. **Save as Preset** stores your current config.
@@ -143,15 +156,16 @@ Cycle values show the current option. **Save as Preset** stores your current con
 
 ### Presets
 
-| Preset | Command | Use case |
+| Preset | Attacks | Use case |
 |--------|---------|----------|
-| **PIXIE Rush** | `--wps-only --pixie --wps-time 30` | Fast WPS pixie dust |
-| **WPA Grab** | `--no-wps --no-pmkid --nodeauths` | Passive WPA handshake capture |
-| **PMKID Hunter** | `--no-wps --pmkid` | Roaming PMKID capture |
-| **Full Power** | `-ab` | All attacks, 2.4GHz + 5GHz |
-| **PIXIE Q60** | `--wps-only --pixie --wps-time 60` | WPS pixie with more time |
-| **Survey Only** | `--skip-crack --nodeauths` | Scan only, no attacks or cracks |
-| **WPA3 Focus** | `--wpa3` | WPA3-only attacks |
+| **PIXIE Rush** | WPS pixie (30s) | Fast WPS pixie dust |
+| **WPA Grab** | WPA handshake | Handshake capture |
+| **WPS + WPA** | WPS pixie (60s) + WPA | Try pixie, fall back to a handshake |
+| **PIXIE Q60** | WPS pixie (60s) | WPS pixie with more time |
+| **Survey Only** | none | Scan only, no attacks |
+
+Presets set which attacks run; capture never auto-cracks. Cracking is a separate,
+manual step (see below).
 
 ### Auto-start
 
@@ -194,7 +208,7 @@ config.py          pins, presets, defaults, server, RaspberryPi HW class
 cracked_store.py   read/write with corruption recovery, migration, settings
 hardware/          display (LCD), gpio (shared lgpio), buttons, battery (INA219)
 ui/                theme (6 colors), menus, screens (splash, attack status)
-wifite/            interface, scanner, attacker, typed output parser
+attack/            interface, scanner, model, wpa, wps, pmkid, orchestrator, crack, tools
 network/           connect (nmcli→internal→external), tailscale, upload (incremental SCP)
 install.sh         fresh-Pi setup (step counter + spinner)
 finalize.sh        clean up before SD card imaging
