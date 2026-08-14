@@ -153,7 +153,7 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
         nets = list(merged.values())
 
         if progress_cb:
-            progress_cb(len(nets))
+            progress_cb(nets)          # pass the growing list (callers may use len)
 
         # A single `iw scan` already returns every nearby AP, so stop as soon
         # as a pass finds something instead of spinning the whole duration.

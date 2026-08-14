@@ -120,7 +120,7 @@ def pixie(mon, target, req, emit, stop_flag):
             emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
                              phase="PIXIE",
                              countdown=max(0, int(timeout - (time.time() - start))),
-                             cd_max=timeout))
+                             cd_max=timeout, signal=target.get("signal")))
     finally:
         try:
             proc.terminate()

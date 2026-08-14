@@ -127,13 +127,14 @@ class AttackStatus:
         self.target_total = 0
         self.cur_essid = ""
         self.cur_phase = ""       # short code straight from the engine: HS/PIXIE/PMKID/DEAUTH/CRACK
-        self.cur_countdown = None # int seconds remaining in the current phase
+        self.cur_countdown = None # int seconds remaining (as of the last event)
+        self._cd_at = 0.0         # wall-clock when cur_countdown was set (live tick)
         self.scan_targets = 0     # live count while the engine is still scanning
-        self.scan_clients = 0
+        self.scan_found = []      # [{essid,signal}] discovered this scan
         self.started = False      # True once the engine emits its first real event
         self.last_msg = ""        # latest boot/message line, shown while starting
         self.cur_signal = None    # current target power (dBm)
-        self.cur_clients = 0      # associated clients on current target
+        self.cur_clients = None   # associated clients on current target (None = n/a)
         self.target_start = time.time()   # when the current target began
         self.last_deauth = 0.0    # last time a deauth event arrived (for a pulse)
         self.results = []         # list of [essid, status, cred/reason]
@@ -168,15 +169,15 @@ class AttackStatus:
         self.started = True       # first real event -> the engine is up and scanning
         if t == "scan":
             self.scan_targets = ev.get("targets", 0)
-            self.scan_clients = ev.get("clients", 0)
+            self.scan_found = ev.get("found", []) or []
             self.cur_essid = ""
             self.cur_phase = ""
             self.cur_countdown = None
         elif t == "attack":
             if essid != self.cur_essid:      # moved to a new target -> reset
                 self.target_start = time.time()
-                self.cur_signal = None
-                self.cur_clients = 0
+                self.cur_signal = ev.get("signal")
+                self.cur_clients = None
             self.cur_essid = essid
             self.cur_phase = ""       # no chip until a real phase arrives
             self.cur_countdown = None
@@ -188,6 +189,7 @@ class AttackStatus:
                 self.cur_essid = essid
             self.cur_phase = ev.get("phase", "") or ""   # already a short code
             self.cur_countdown = ev.get("countdown")
+            self._cd_at = time.time()                    # anchor for the live tick
             if ev.get("signal") is not None:
                 self.cur_signal = ev["signal"]
             if ev.get("clients") is not None:
@@ -256,8 +258,15 @@ class AttackStatus:
             return text[:max(1, int(maxw / 6))]
         return text
 
+    def _live_cd(self):
+        """Countdown decremented locally so it ticks every second between the
+        engine's (sparser) heartbeat events."""
+        if self.cur_countdown is None:
+            return None
+        return max(0, self.cur_countdown - int(time.time() - self._cd_at))
+
     def _cd_str(self):
-        s = self.cur_countdown
+        s = self._live_cd()
         return "" if s is None else "%d:%02d" % (s // 60, s % 60)
 
     def render(self, force=False):
@@ -309,12 +318,18 @@ class AttackStatus:
         theme.counters(d, W - 40, 13, c, h, micro)
 
         if not attacking:
-            # Scanning: big count that climbs as the engine finds APs.
-            theme.shadowed(d, "%s SCANNING" % theme.spinner(self._tick),
-                           (3, 34), hero, color=theme.accent_color())
-            theme.shadowed(d, "%d APs found" % self.scan_targets,
-                           (3, 56), body, color=WHITE)
-            theme.hline(d, 74)
+            # Scanning: live discovery list — signal bars + SSID, newest first.
+            theme.shadowed(d, "%s scanning..." % theme.spinner(self._tick),
+                           (3, 28), body, color=theme.accent_color())
+            theme.hline(d, 43)
+            y = 46
+            for item in reversed(self.scan_found[-6:]):
+                if y > H - 15:
+                    break
+                theme.signal_bars(d, 3, y + 1, item.get("signal"))
+                theme.shadowed(d, self._fit(d, item.get("essid") or "?", body,
+                               W - 22), (18, y - 1), body, color=WHITE)
+                y += 12
         else:
             # --- hero: current target + phase pill ---
             name = self.cur_essid or "..."
@@ -330,9 +345,10 @@ class AttackStatus:
                            (3, 24), hero, color=WHITE)
 
             # --- HUD line: signal bars · clients · deauth pulse · countdown ---
-            hx = theme.signal_bars(d, 3, 45, self.cur_signal) + 5
-            theme.shadowed(d, "%d sta" % self.cur_clients, (hx, 44), micro,
-                           color=WHITE)
+            hx = theme.signal_bars(d, 3, 45, self.cur_signal) + 6
+            if self.cur_clients is not None:      # only meaningful for WPA
+                theme.shadowed(d, "%d sta" % self.cur_clients, (hx, 44), micro,
+                               color=WHITE)
             if time.time() - self.last_deauth < 2.5 and self._tick % 2:
                 theme.shadowed(d, "DEAUTH", (hx + 34, 44), micro,
                                color=theme.highlight_color())
@@ -340,8 +356,8 @@ class AttackStatus:
             if cd:
                 theme.shadowed(d, cd, (W - 26, 44), micro, color=WHITE)
 
-            # --- countdown gauge ---
-            secs = self.cur_countdown
+            # --- countdown gauge (live) ---
+            secs = self._live_cd()
             if secs is not None and self._cd_max:
                 pct = int(100 * secs / self._cd_max)
                 theme.progress_bar(d, 3, 56, W - 6, 4, pct,

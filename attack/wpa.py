@@ -18,6 +18,24 @@ def _safe(name):
     return re.sub(r"[^A-Za-z0-9_-]", "_", (name or "unknown"))[:24]
 
 
+def _count_clients(csv_path, bssid):
+    """Count stations associated with `bssid` in airodump's live -01.csv."""
+    try:
+        with open(csv_path, encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+    except OSError:
+        return None
+    idx = text.find("Station MAC")          # second section = associated clients
+    if idx < 0:
+        return 0
+    count = 0
+    for line in text[idx:].splitlines()[1:]:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) > 5 and parts[5].upper() == bssid.upper():
+            count += 1
+    return count
+
+
 def _has_handshake(cap_path, bssid):
     """True if `cap_path` contains a WPA handshake for `bssid`.
 
@@ -46,8 +64,10 @@ def capture(mon, target, req, emit, stop_flag):
     prefix = os.path.join(config.CAPTURE_DIR, "%s_%s" % (_safe(essid),
                           bssid.replace(":", "")))
     cap = prefix + "-01.cap"
+    csv = prefix + "-01.csv"
+    signal = target.get("signal")
     # Clear stale captures for this prefix so -01 is fresh.
-    for old in (cap, prefix + "-01.csv"):
+    for old in (cap, csv):
         try:
             os.remove(old)
         except OSError:
@@ -92,7 +112,8 @@ def capture(mon, target, req, emit, stop_flag):
                                  current=num_deauth))
 
             emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
-                             phase="HS", countdown=remaining, cd_max=timeout))
+                             phase="HS", countdown=remaining, cd_max=timeout,
+                             signal=signal, clients=_count_clients(csv, bssid)))
 
             if _has_handshake(cap, bssid):
                 emit(AttackEvent(EventType.HANDSHAKE, essid=essid, bssid=bssid))

@@ -77,7 +77,7 @@ def build_request(iface, preset=None):
 # ---------------------------------------------------------------------------
 def _as_target(net):
     return {"essid": net.get("essid"), "bssid": net.get("bssid"),
-            "channel": net.get("channel")}
+            "channel": net.get("channel"), "signal": net.get("signal")}
 
 
 def _filtered(nets, req):
@@ -120,9 +120,11 @@ def _resolve_targets(iface_name, req, preset, status_cb, stop_flag):
     if status_cb:
         status_cb({"type": "message", "text": "scanning %ds..." % dur})
 
-    def _scan_progress(n):
+    def _scan_progress(nets):
         if status_cb:
-            status_cb({"type": "scan", "targets": n, "clients": 0})
+            found = [{"essid": n.get("essid") or n.get("bssid"),
+                      "signal": n.get("signal")} for n in nets[-8:]]
+            status_cb({"type": "scan", "targets": len(nets), "found": found})
 
     nets = sc.scan(iface_name, duration=dur, progress_cb=_scan_progress,
                    stop_flag=stop_flag)

@@ -221,7 +221,7 @@ def _scan_with_progress(iface_name, driver="", title="SCAN"):
 
     def worker():
         nets = sc.scan(iface_name, duration=duration,
-                       progress_cb=lambda n: state.__setitem__("n", n))
+                       progress_cb=lambda ns: state.__setitem__("n", len(ns)))
         state["nets"] = sc.sort_by_signal(nets)
         state["done"] = True
 
@@ -437,9 +437,24 @@ def run_and_show(preset):
     monitor = threading.Thread(target=stop_check, daemon=True)
     monitor.start()
 
-    res = orchestrator.run(iface, preset=preset,
-                           progress_cb=progress, status_cb=status_ev,
-                           stop_flag=stop)
+    # Repaint ~2x/sec so the countdown ticks and the deauth/spinner animate even
+    # between the engine's sparser heartbeat events.
+    done = threading.Event()
+
+    def ticker():
+        while not done.is_set():
+            if st.started:
+                st.render()
+            done.wait(0.5)
+
+    threading.Thread(target=ticker, daemon=True).start()
+
+    try:
+        res = orchestrator.run(iface, preset=preset,
+                               progress_cb=progress, status_cb=status_ev,
+                               stop_flag=stop)
+    finally:
+        done.set()
 
     # summary
     pv = ProgressView("DONE")
