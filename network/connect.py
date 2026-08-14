@@ -21,15 +21,36 @@ def run(cmd, timeout=25):
 
 
 def _nmcli_connect(ifname, ssid, psk):
+    """Return (ok, error_text). ok is None if nmcli is unavailable."""
     args = ["nmcli", "dev", "wifi", "connect", ssid]
     if psk:
         args += ["password", psk]
     if ifname:
         args += ["ifname", ifname]
-    r = run(args)
+    r = run(args, timeout=35)
     if r is None:
-        return None
-    return r.returncode == 0
+        return None, "nmcli unavailable"
+    lines = ((r.stderr or "") + (r.stdout or "")).strip().splitlines()
+    return (r.returncode == 0), (lines[-1] if lines else "")
+
+
+def _nm_manage(ifname, managed=True):
+    """Hand an interface (back) to NetworkManager — the external attack card is
+    left unmanaged during attacks, so nmcli can't use it until re-managed."""
+    run(["nmcli", "device", "set", ifname, "managed",
+         "yes" if managed else "no"], timeout=8)
+
+
+def _associated_ssid(ifname):
+    """The SSID the interface is actually associated to, or None."""
+    r = run(["iwgetid", ifname, "-r"], timeout=5)
+    if r and r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip()
+    r = run(["/usr/sbin/iwconfig", ifname], timeout=5)
+    if r:
+        m = re.search(r'ESSID:"([^"]*)"', r.stdout)
+        return m.group(1) if m else None
+    return None
 
 
 def _wpa_supplicant_connect(ifname, ssid, psk):
@@ -69,42 +90,54 @@ def has_internet(timeout=5):
 
 
 def connect(ssid, psk, progress_cb=None, stop_flag=None):
-    """Connect to SSID. Returns (ok, interface_used, error)."""
+    """Connect to SSID. Association counts as success; internet is a bonus.
+
+    Forces a clean disconnect first so re-selecting a network actually reconnects
+    (nmcli otherwise no-ops if it thinks it's already connected). Returns
+    (ok, interface_used, error)."""
     if progress_cb:
         progress_cb("Connecting %s..." % ssid)
 
-    # 1) internal wifi
     internal, external = iface_mod.classify(iface_mod.get_interfaces())
-    internal_name = internal[0][0] if internal else None
-    for label, name in (("internal", internal_name),):
+    candidates = []
+    if internal:
+        candidates.append(("internal", internal[0][0]))
+    candidates += [("external", name) for name, _ in external]
+
+    last_err = "no wifi interface"
+    for label, name in candidates:
         if not name:
             continue
         if progress_cb:
             progress_cb("%s: %s" % (label, name))
-        ok = _nmcli_connect(name, ssid, psk)
+        # External attack card: leave monitor mode + hand it back to NM.
+        if label == "external":
+            try:
+                if iface_mod.is_in_monitor(name):
+                    iface_mod.disable_monitor(name)
+            except Exception:  # noqa: BLE001
+                pass
+            _nm_manage(name, True)
+
+        # Force a clean disconnect so a re-select truly reconnects.
+        run(["nmcli", "device", "disconnect", name], timeout=15)
+        time.sleep(0.5)
+
+        ok, err = _nmcli_connect(name, ssid, psk)
         if ok is None:
             ok = _wpa_supplicant_connect(name, ssid, psk)
-        if ok and has_internet():
+            err = "wpa_supplicant"
+        # Success = actually associated to the target (don't require internet).
+        if ok or _associated_ssid(name) == ssid:
+            if progress_cb:
+                progress_cb("connected" if has_internet()
+                            else "connected (no internet)")
             return True, name, None
-        # fall through to external
-
-    # 2) external cards (managed mode temporarily)
-    for name, _ in external:
+        last_err = err or "failed"
         if progress_cb:
-            progress_cb("external: %s" % name)
-        # ensure it's not in monitor mode
-        try:
-            if iface_mod.is_in_monitor(name):
-                iface_mod.disable_monitor(name)
-        except Exception:  # noqa: BLE001
-            pass
-        ok = _nmcli_connect(name, ssid, psk)
-        if ok is None:
-            ok = _wpa_supplicant_connect(name, ssid, psk)
-        if ok and has_internet():
-            return True, name, None
+            progress_cb("%s failed: %s" % (label, last_err[:16]))
 
-    return False, None, "Could not connect (checked internal + external)"
+    return False, None, last_err
 
 
 def current_ssid():
