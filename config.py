@@ -126,11 +126,6 @@ DEFAULT_FILTERS = [
     {"name": "Ignore Cracked","kind": "bool",  "state": False},
 ]
 
-# Interface options
-DEFAULT_INTERFACE_OPTS = [
-    {"name": "Random MAC", "kind": "cycle", "state": "Off", "values": ["Off", "Full", "Vendor"]},
-]
-
 # ---------------------------------------------------------------------------
 # Quick-run presets — self-contained attack recipes.
 # ---------------------------------------------------------------------------
@@ -142,7 +137,6 @@ DEFAULT_INTERFACE_OPTS = [
 #   deauth       True/False                   num_deauths / deauth_sec  deauth rounds
 #   tool         "reaver" | "bully"           ignore_locks  True/False
 #   band         "Both" | "2.4" | "5"         max_targets   int | "All"
-#   random_mac   "Off" | "Full" | "Vendor"    pixie  (informational; WPS is pixie)
 PRESETS = [
     # Clientless — grab a PMKID with no deauth (works without connected clients).
     {"name": "PMKID Snag",       "desc": "Clientless PMKID, no deauth",
@@ -221,7 +215,6 @@ TARGETED_SCAN_CAP = 30
 attack_modes   = [dict(x) for x in DEFAULT_ATTACK_MODES]
 timing         = [dict(x) for x in DEFAULT_TIMING]
 filters        = [dict(x) for x in DEFAULT_FILTERS]
-interface_opts = [dict(x) for x in DEFAULT_INTERFACE_OPTS]
 presets        = list(PRESETS)
 
 
@@ -237,11 +230,6 @@ try:
 except ImportError:
     _spidev = None
 
-try:
-    import numpy as _np
-except ImportError:
-    _np = None
-
 from hardware import gpio as _gpio
 
 
@@ -251,7 +239,6 @@ class RaspberryPi:
     def __init__(self, spi=None, spi_freq=40000000,
                  rst=27, dc=25, bl=24, bl_freq=1000,
                  i2c=None, i2c_freq=100000):
-        self.np = _np
         self.INPUT = False
         self.OUTPUT = True
         self.SPEED = spi_freq

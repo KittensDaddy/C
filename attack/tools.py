@@ -28,8 +28,6 @@ REAVER = which("reaver", "/usr/bin/reaver", "/usr/sbin/reaver")
 BULLY = which("bully", "/usr/bin/bully", "/usr/sbin/bully")
 HCXDUMP = which("hcxdumptool", "/usr/bin/hcxdumptool", "/usr/sbin/hcxdumptool")
 HCXPCAP = which("hcxpcapngtool", "/usr/bin/hcxpcapngtool")
-HASHCAT = which("hashcat", "/usr/bin/hashcat")
-MACCHANGER = which("macchanger", "/usr/bin/macchanger")
 
 # Which tools each capability needs (for SysCheck).
 REQUIRED_TOOLS = {
@@ -39,7 +37,6 @@ REQUIRED_TOOLS = {
     "reaver": REAVER,
     "bully": BULLY,
     "hcxdumptool": HCXDUMP,
-    "hashcat": HASHCAT,
 }
 
 

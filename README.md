@@ -135,14 +135,13 @@ connect to that network. Entries without a password show as `(no-psk)`.
 
 #### Configuring attacks
 
-**Config** has 5 submenus:
+**Config** has 4 submenus:
 
 | Submenu | What toggles |
 |---------|-------------|
 | **Attack Modes** | WPA, WPS Pixie, WPS Tool (reaver/bully), Deauth, Ignore Locks, PMKID |
 | **Timing** | Scan Time, WPS Timeout, WPA Timeout, Deauth Sec, Num Deauths |
 | **Target Filters** | Band (Both/2.4/5), Min Signal, Max Targets, Ignore Cracked |
-| **Interface** | Random MAC |
 | **Exclude SSIDs** | Scan → toggle BSSIDs to exclude from attacks |
 
 Toggle style: press to cycle. Booleans show a **green circle** (ON) or **red circle** (OFF).

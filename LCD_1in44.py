@@ -27,7 +27,6 @@
 
 import config
 import time
-import numpy as np
 
 LCD_1IN44 = 1
 LCD_1IN8 = 0
@@ -301,6 +300,25 @@ class LCD(config.RaspberryPi):
 		for i in range(0, len(_buffer), 4096):
 			self.spi_writebyte(_buffer[i:i+4096])
 
+	#--------------------------------------------------------------------------------
+	# function:	Convert a PIL RGB image to the panel's RGB565 byte order (no numpy).
+	#			Each 16-bit pixel = (R&0xF8)|(G>>5) for the low byte, and
+	#			((G<<3)&0xE0)|(B>>3) for the high byte, big-endian per SPI order.
+	#--------------------------------------------------------------------------------
+	@staticmethod
+	def _to_rgb565(im):
+		rgb = im.convert("RGB")
+		raw = rgb.tobytes()               # w*h*3
+		n = len(raw) // 3
+		out = bytearray(n * 2)
+		j = 0
+		for i in range(0, len(raw), 3):
+			r, g, b = raw[i], raw[i + 1], raw[i + 2]
+			out[j] = (r & 0xF8) | (g >> 5)
+			out[j + 1] = ((g << 3) & 0xE0) | (b >> 3)
+			j += 2
+		return out
+
 	def LCD_ShowImage(self,Image,Xstart,Ystart):
 		if (Image == None):
 			return
@@ -308,11 +326,7 @@ class LCD(config.RaspberryPi):
 		if imwidth != self.width or imheight != self.height:
 			raise ValueError('Image must be same dimensions as display \
 				({0}x{1}).' .format(self.width, self.height))
-		img = np.asarray(Image)
-		pix = np.zeros((self.width,self.height,2), dtype = np.uint8)
-		pix[...,[0]] = np.add(np.bitwise_and(img[...,[0]],0xF8),np.right_shift(img[...,[1]],5))
-		pix[...,[1]] = np.add(np.bitwise_and(np.left_shift(img[...,[1]],3),0xE0),np.right_shift(img[...,[2]],3))
-		pix = pix.flatten().tolist()
+		pix = self._to_rgb565(Image)
 		self.LCD_SetWindows(0, 0, self.width , self.height)
 		self.digital_write(self.GPIO_DC_PIN, True)
 		for i in range(0,len(pix),4096):
@@ -328,11 +342,8 @@ class LCD(config.RaspberryPi):
 		y0 = max(0, int(y0)); y1 = min(self.height, int(y1))
 		if y1 <= y0:
 			return
-		img = np.asarray(Image)[y0:y1, :, :]
-		pix = np.zeros((y1 - y0, self.width, 2), dtype=np.uint8)
-		pix[...,[0]] = np.add(np.bitwise_and(img[...,[0]],0xF8),np.right_shift(img[...,[1]],5))
-		pix[...,[1]] = np.add(np.bitwise_and(np.left_shift(img[...,[1]],3),0xE0),np.right_shift(img[...,[2]],3))
-		pix = pix.flatten().tolist()
+		strip = Image.crop((0, y0, self.width, y1))
+		pix = self._to_rgb565(strip)
 		self.LCD_SetWindows(0, y0, self.width, y1)
 		self.digital_write(self.GPIO_DC_PIN, True)
 		for i in range(0,len(pix),4096):

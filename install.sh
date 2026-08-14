@@ -149,12 +149,12 @@ install_packages() {
     apt-get upgrade -y >> "$LOG" 2>&1 || warn "apt upgrade had warnings"
 
     local pkgs=(
-        python3 python3-pip python3-setuptools
-        python3-pil python3-numpy
+        python3
+        python3-pil
         python3-lgpio python3-spidev python3-smbus2 i2c-tools
-        aircrack-ng reaver bully hashcat hcxtools hcxdumptool
-        macchanger wireless-tools iw iproute2
-        network-manager dnsutils curl git
+        aircrack-ng reaver bully hcxtools hcxdumptool
+        wireless-tools iw iproute2
+        network-manager curl git
         tailscale
     )
     local total=${#pkgs[@]}
@@ -206,7 +206,7 @@ setup_sudoers() {
     step 5 "Configuring passwordless sudo..."
     local f="/etc/sudoers.d/wifibox"
     cat > "$f" <<EOF
-$USER ALL=(ALL) NOPASSWD: /usr/sbin/airmon-ng, /usr/sbin/airodump-ng, /usr/sbin/aireplay-ng, /usr/bin/aircrack-ng, /usr/bin/reaver, /usr/bin/bully, /usr/bin/hcxdumptool, /usr/sbin/iw, /usr/sbin/iwconfig, /usr/bin/nmcli, /usr/sbin/ip, /usr/bin/macchanger, /usr/bin/tailscale
+$USER ALL=(ALL) NOPASSWD: /usr/sbin/airmon-ng, /usr/sbin/airodump-ng, /usr/sbin/aireplay-ng, /usr/bin/aircrack-ng, /usr/bin/reaver, /usr/bin/bully, /usr/bin/hcxdumptool, /usr/sbin/iw, /usr/sbin/iwconfig, /usr/bin/nmcli, /usr/sbin/ip, /usr/bin/tailscale
 EOF
     chmod 440 "$f"
     ok "sudoers: $f"
@@ -285,7 +285,6 @@ verify() {
         ["reaver"]="command -v reaver"
         ["bully"]="command -v bully"
         ["hcxdumptool"]="command -v hcxdumptool"
-        ["hashcat"]="command -v hashcat"
         ["lgpio"]="python3 -c 'import lgpio'"
         ["spidev"]="python3 -c 'import spidev'"
         ["smbus2"]="python3 -c 'import smbus2'"
@@ -301,7 +300,7 @@ verify() {
         failc=$((failc+1))
     fi
 
-    for label in airodump-ng aireplay-ng aircrack-ng reaver bully hcxdumptool hashcat lgpio spidev smbus2 PIL tailscale; do
+    for label in airodump-ng aireplay-ng aircrack-ng reaver bully hcxdumptool lgpio spidev smbus2 PIL tailscale; do
         if eval "${checks[$label]}" 2>/dev/null; then
             ok "$label"
             pass=$((pass+1))

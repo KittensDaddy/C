@@ -1,31 +1,38 @@
 # wifi-box v2 — Agent Context
 
-Pi: `sun@cybercat` running Bookworm, has Waveshare 1.44" LCD HAT + RTL8192EU USB WiFi.
+Pi: `sun@cybercat` running Bookworm, has Waveshare 1.44" LCD HAT + external USB WiFi.
 
-## Current state (2aced99)
+## Current state
 
-**Push last commit → Pi pulls → `sudo systemctl restart wifibox` to test.**
+Native attack engine (no wifite2): `airodump-ng`/`aireplay-ng` (WPA handshake) and
+`reaver`/`bully` (WPS pixie-dust) driven directly, reading structured output — no
+stdout scraping. **Push last commit → Pi pulls → `sudo systemctl restart wifibox` to test.**
 
 ### What works (verified on dev machine)
-- All modules compile + import
-- Command building: presets and all config toggles generate correct wifite2 argv
-- Output parser: tested against real wifite2 patterns (scan, attack, handshake, crack, fail)
-- cracked_store: corrupt-tolerant JSON + upload state tracking
-- install.sh: step counters, spinner, tailscale repo, kernel-headers auto-detect
-
-### What's broken on the Pi
-1. **LCD white screen** — `config.RaspberryPi` class was missing (LCD_1in44.py inherits from it). Added in 46e650c. Pi needs: `sudo apt install python3-gpiozero && git pull && sudo systemctl restart wifibox`
-2. **wifite2 not installed** — old install script failed at `pip install -e .`. Pi needs: `cd ~/C && git pull && sudo bash install.sh` (now uses `setup.py install`)
-3. **Attack status screen shows nothing useful** — old parser matched wrong patterns. Fixed in 2aced99 with parser based on actual wifite2 source.
-4. **RTL8192EU dkms hangs** — old driver doesn't build on Bookworm 6.x. Skip it. In-tree `rtl8xxxu` handles monitor mode natively.
+- All modules compile + import; full app runs headless without GPIO/LCD
+- WPA handshake capture (airodump pcap + aircrack handshake check), optional PMKID
+- WPS pixie (`reaver -K 1`, bully fallback): PIN vs PSK distinguished, PSK recovered
+  from a pixie PIN (`reaver -p <pin>`), and again from the Cracked detail view
+- Multi-BSSID target include/exclude, band + signal filters, presets
+- cracked_store: corrupt-tolerant JSON + upload state tracking + `update_cracked()`
+- install.sh: step counters, spinner, tailscale repo
+- LCD RGB565 encoding is pure-PIL (no numpy)
 
 ### To test after pull on Pi
 ```bash
 systemctl status wifibox          # should show LCD splash + menu
 iwconfig                          # check external USB wifi shows up
-sudo wifite --help | head -3      # wifite installed?
 tail -f ~/C/wifibox.log           # any runtime errors
+sudo wifite --help | head -3      # (this SHOULD fail — wifite2 is gone)
 ```
+
+### Dependency notes
+- **Attack tools:** aircrack-ng, aireplay-ng, airodump-ng, reaver, bully, hcxdumptool
+  (+ hcxpcapngtool for PMKID→.22000). On-box crack = aircrack-ng + rockyou; the Pi
+  has no hashcat (server cracks with its own).
+- **UI/HW:** python3, python3-pil, lgpio, spidev, smbus2 (INA219). No numpy.
+- Not installed on purpose: wifite2, hashcat, macchanger, dnsutils, pip/setuptools,
+  DKMS RTL8192EU driver (in-tree `rtl8xxxu` handles monitor mode on 6.x kernels).
 
 ### File map
 ```
@@ -37,13 +44,16 @@ finalize.sh        cleanup for SD card imaging
 hardware/display   LCD wrapper (headless fallback)
 hardware/buttons   lgpio GPIO (chip fallback 4→0→1)
 hardware/battery   INA219: white(>50%)/orange(30-50%)/red(<30%)
-ui/theme          6 themes, shadowed text, circle, progress_bar
-ui/screens         splash, AttackStatus, ProgressView, status_bar
-ui/menus           all menus (main, config, scan, presets, connect, upload, ...)
-wifite/interface   IF detection, monitor mode on/off (airmon-ng→iw fallback)
-wifite/scanner     iw→iwlist→nmcli scan fallback
-wifite/attacker    build wifite cmd from config, run, parse output
-wifite/output      parser for real wifite2 stdout (kimocoder)
+ui/theme          6 themes, shadowed text, circle, progress_bar, marquee
+ui/screens         splash, AttackStatus, ProgressView, CommandPreview, status_bar
+ui/menus           all menus (main, config, scan, presets, connect, upload, cracked detail)
+attack/interface   IF detection, monitor mode on/off (airmon-ng→iw fallback)
+attack/scanner     iw→iwlist→nmcli scan fallback
+attack/orchestrator  target resolution → monitor on → per-target WPS/WPA/PMKID
+attack/wpa         airodump+aireplay handshake capture (pcap, no stdout scrape)
+attack/wps         reaver pixie (bully fallback); PIN→PSK recovery
+attack/pmkid       optional hcxdumptool → hcxpcapngtool → .22000
+attack/crack       manual on-box (aircrack/rockyou) or server upload; never auto
 network/connect    nmcli→wpa_supplicant (internal→external), dhcpcd→dhclient→nmcli
 network/tailscale  status, up, ping server
 network/upload     incremental SCP to 100.124.251.39:/home/sun/handshake/
@@ -60,6 +70,8 @@ SPI: SCLK=11 MOSI=10 CS=8 (CE0)
 ```
 
 ### Known issues
-- `_config_flags` produces `-p 30` which means pillage=30s then auto-attack all targets. Fine for presets but the "Scan & Attack" flow lets user pick a single target first. For single-target attack, should NOT pass `-p` (or pass `-p 0`). Only Quick Attack / presets should use `-p`.
-- Attack modes: default config enables everything (WPS+WPA+pixie). Users may want to toggle selectively.
-- The main loop blocks during long-running attack status — button events during attacks only go to the stop-monitor thread. Fine for v1.
+- Attack modes default enables everything (WPS+WPA+pixie). Users may want to toggle
+  selectively; a pixie PIN without a recovered PSK is not connectable (use the
+  Cracked detail view → Recover PSK).
+- The main loop blocks during long-running attack status — button events during
+  attacks only go to the stop-monitor thread. Fine for v1.

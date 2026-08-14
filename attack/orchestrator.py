@@ -61,7 +61,6 @@ _PRESET_MAP = {
     "ignore_locks": ("attack_modes", "Ignore Locks"),
     "band":        ("filters", "Band"),
     "max_targets": ("filters", "Max Targets"),
-    "random_mac":  ("interface_opts", "Random MAC"),
 }
 
 
@@ -88,7 +87,6 @@ def build_request(iface, preset=None):
         "attack_modes": [dict(x) for x in config.attack_modes],
         "timing": [dict(x) for x in config.timing],
         "filters": [dict(x) for x in config.filters],
-        "interface_opts": [dict(x) for x in config.interface_opts],
     }
     _apply_preset_overrides(preset, snapshots)
     band = config.opt_state(snapshots["filters"], "Band", "Both")
@@ -104,7 +102,6 @@ def build_request(iface, preset=None):
         attack_modes=snapshots["attack_modes"],
         timing=snapshots["timing"],
         filters=snapshots["filters"],
-        interface_opts=snapshots["interface_opts"],
     )
 
 
