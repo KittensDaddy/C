@@ -12,6 +12,7 @@ import subprocess
 import time
 
 import config
+from attack import interface as iface_mod
 from attack import tools
 from attack.model import AttackEvent, EventType
 
@@ -144,6 +145,29 @@ def pixie(mon, target, req, emit, stop_flag):
         result = {"ok": True, "psk": psk, "pin": pin,
                   "essid": essid, "bssid": bssid}
     return result
+
+
+def recover_psk(iface, target, pin, emit, stop_flag=None, timeout=90):
+    """Standalone PIN -> PSK recovery, driven from the UI (cracked detail view).
+
+    Enables monitor mode on the external adapter, runs `reaver -p <pin>`, then
+    restores the interface. Returns the PSK string, or None on failure/cancel.
+    """
+    essid = target.get("essid") or target.get("bssid")
+    bssid = target.get("bssid")
+    name = iface_mod.iface_name(iface)
+    if not tools.tool_ok(tools.REAVER):
+        emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
+                         detail="reaver missing"))
+        return None
+    try:
+        with iface_mod.monitor_mode(name) as mon:
+            return _recover_psk(mon, target, pin, emit, essid, bssid,
+                                stop_flag, timeout=timeout)
+    except RuntimeError as e:
+        emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
+                         detail=str(e)[:20]))
+        return None
 
 
 def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag, timeout=90):

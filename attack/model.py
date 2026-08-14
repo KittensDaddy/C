@@ -40,7 +40,6 @@ class AttackRequest:
     attack_modes: List[Dict[str, Any]] = field(default_factory=list)
     timing: List[Dict[str, Any]] = field(default_factory=list)
     filters: List[Dict[str, Any]] = field(default_factory=list)
-    interface_opts: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

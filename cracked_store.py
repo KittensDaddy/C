@@ -86,6 +86,23 @@ def save_cracked(entries):
     return _atomic_write(config.CRACKED_FILE, entries, mode=0o600)
 
 
+def update_cracked(bssid, **fields):
+    """Update an existing cracked entry by BSSID (e.g. backfill a PSK from a
+    PIN). Fields are only written when truthy. Returns True if anything changed."""
+    entries = load_cracked()
+    changed = False
+    for e in entries:
+        if e.get("bssid") == bssid:
+            for k, v in fields.items():
+                if v and not e.get(k):
+                    e[k] = v
+                    changed = True
+            break
+    if changed:
+        save_cracked(entries)
+    return changed
+
+
 def count_cracked():
     return len(load_cracked())
 

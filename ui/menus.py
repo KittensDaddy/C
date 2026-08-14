@@ -15,8 +15,9 @@ from ui.screens import (display, font, status_bar, header, box,
                         AttackStatus, ProgressView, CommandPreview, render_splash)
 from hardware import battery
 from attack import interface as iface_mod, scanner as sc, orchestrator
-from attack import crack as crack_mod, tools as atk_tools
-from cracked_store import load_cracked, load_settings, save_settings
+from attack import crack as crack_mod, tools as atk_tools, wps as wps_mod
+from attack.model import EventType
+from cracked_store import load_cracked, load_settings, save_settings, update_cracked
 from network import connect as net_connect, tailscale, upload as net_upload
 
 _evq = queue.Queue()
@@ -509,7 +510,7 @@ def run_and_show(preset):
 # Config menu + sections
 # --------------------------------------------------------------------------
 def config_menu():
-    labels = ["Attack Modes", "Timing", "Target Filters", "Interface",
+    labels = ["Attack Modes", "Timing", "Target Filters",
               "Exclude SSIDs", "Save as Preset"]
     active = 0
     d = display.begin()
@@ -533,8 +534,6 @@ def config_menu():
                 toggle_section("TIMING", config.timing)
             elif labels[active] == "Target Filters":
                 toggle_section("FILTERS", config.filters)
-            elif labels[active] == "Interface":
-                toggle_section("INTERFACE", config.interface_opts)
             elif labels[active] == "Exclude SSIDs":
                 exclude_menu()
             elif labels[active] == "Save as Preset":
@@ -689,6 +688,121 @@ def exclude_menu():
 # --------------------------------------------------------------------------
 # Cracked viewer
 # --------------------------------------------------------------------------
+def _recover_psk_ui(entry):
+    """Recover the WPA PSK from a known WPS PIN via reaver, live on screen.
+    Returns the PSK string, or None on failure/cancel (KEY1/KEY3 to stop)."""
+    iface = iface_mod.pick_external(iface_mod.get_interfaces())
+    if not iface:
+        status("No external interface")
+        time.sleep(1.5)
+        return None
+    pv = ProgressView("RECOVER")
+    pv.push("PIN %s" % (entry.get("pin") or "?"))
+    pv.push("reaver -p ...")
+    stop = threading.Event()
+    result = {"psk": None}
+    done = threading.Event()
+
+    def emit(ev):
+        if ev.type == EventType.PHASE:
+            pv.push("GETPSK %ss" % (ev.countdown or 0))
+        elif ev.type == EventType.FAILED:
+            pv.push("ERR %s" % (ev.detail or "failed"))
+
+    def worker():
+        try:
+            target = {"essid": entry.get("essid"),
+                      "bssid": entry.get("bssid"),
+                      "channel": entry.get("channel")}
+            result["psk"] = wps_mod.recover_psk(iface, target,
+                                                entry.get("pin"), emit, stop)
+        finally:
+            done.set()
+
+    threading.Thread(target=worker, daemon=True).start()
+    while not done.is_set():
+        ev = wait_event(0.3)
+        if ev and ev["type"] in ("key1", "key3"):
+            stop.set()
+        pv.render()
+    if result["psk"]:
+        pv.push("OK PSK %s" % result["psk"])
+    else:
+        pv.push("cancelled" if stop.is_set() else "ERR no psk")
+    pv.render()
+    time.sleep(2)
+    return result.get("psk")
+
+
+def cracked_detail(entry):
+    """Detail view for one cracked entry: ESSID, PSK, PIN + actions.
+    Press a row to act: Connect (has PSK), Recover PSK (PIN only), Back."""
+    actions = []
+    if entry.get("psk"):
+        actions.append("Connect")
+    if entry.get("pin") and not entry.get("psk"):
+        actions.append("Recover PSK")
+    actions.append("Back")
+    active = 0
+
+    def _render():
+        d = display.begin()
+        box(d, "DETAIL")
+        W = config.WIDTH
+        body, micro = font(), font(theme.MICRO)
+        y = 16
+        theme.marquee(d, 3, y, entry.get("essid") or "?", W - 6, body,
+                      theme.highlight_color())
+        y += 15
+        psk = entry.get("psk")
+        pin = entry.get("pin")
+        theme.shadowed(d, "PSK %s" % (psk or "-"), (3, y), micro,
+                       color=theme.accent_color() if psk else theme.dim_color())
+        y += 12
+        theme.shadowed(d, "PIN %s" % (pin or "-"), (3, y), micro,
+                       color=theme.accent_color() if pin else theme.dim_color())
+        y += 13
+        theme.hline(d, y)
+        y += 2
+        for i, a in enumerate(actions):
+            y = theme.list_row(d, 3, y, W - 6, a, i == active, body)
+        display.show()
+
+    _render()
+    set_repaint(_render)
+    try:
+        while True:
+            ev = wait_event()
+            if not ev:
+                continue
+            active = _move(active, len(actions), ev)
+            if ev["type"] in ("up", "down"):
+                _render()
+            elif ev["type"] == "press":
+                a = actions[active]
+                if a == "Connect":
+                    set_repaint(None)
+                    connect_to_ssid(entry["essid"], entry["psk"])
+                    return
+                if a == "Recover PSK":
+                    set_repaint(None)
+                    psk = _recover_psk_ui(entry)
+                    if psk:
+                        entry["psk"] = psk
+                        update_cracked(entry.get("bssid"), psk=psk)
+                        # Now connectable: drop the recovery row, keep Connect.
+                        actions[:] = ["Connect", "Back"]
+                        active = 0
+                    _render()
+                    set_repaint(_render)
+                else:                       # Back
+                    return
+            elif ev["type"] == "key1":
+                return
+    finally:
+        set_repaint(None)
+
+
 def cracked_viewer():
     entries = load_cracked()
     if not entries:
@@ -719,15 +833,9 @@ def cracked_viewer():
             if ev["type"] in ("up", "down"):
                 _render()
             elif ev["type"] == "press":
-                psk = entries[active].get("psk")
-                if psk:
-                    config.Runtime.target_essid = entries[active]["essid"]
-                    set_repaint(None)
-                    connect_to_ssid(entries[active]["essid"], psk)
-                    set_repaint(_render)
-                else:
-                    status("no password for this one")
-                    time.sleep(1)
+                set_repaint(None)
+                cracked_detail(entries[active])
+                set_repaint(_render)
                 _render()
             elif ev["type"] == "key1":
                 return
