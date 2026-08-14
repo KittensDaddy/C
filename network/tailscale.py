@@ -2,14 +2,19 @@
 """Tailscale status/connectivity helpers with graceful fallbacks."""
 import subprocess
 import shutil
+import threading
 import time
 
 import config
 
-# status() is polled from the render loop, so cache it — a subprocess spawn
-# per frame is what makes the LCD lag. Refreshed at most once per interval.
-_STATUS_TTL = 15.0
-_status_cache = {"t": 0.0, "v": None}
+# `tailscale status` spawns a subprocess that BLOCKS ~2s when the daemon is down
+# (it's on-demand here). Calling that from a render — while holding the display
+# lock — froze the whole UI. So a background thread polls it and status() only
+# ever returns the cached value; it never spawns inline.
+_STATUS_TTL = 10.0
+_status_cache = {"t": 0.0, "v": "no_tailscale"}
+_poller_started = False
+_poller_lock = threading.Lock()
 
 
 def run(cmd, timeout=20):
@@ -24,15 +29,34 @@ def available():
     return shutil.which("tailscale") is not None
 
 
-def status(max_age=_STATUS_TTL):
-    """Return one of: 'up', 'down', 'logged_out', 'no_tailscale' (cached)."""
-    now = time.time()
-    if _status_cache["v"] is not None and now - _status_cache["t"] < max_age:
-        return _status_cache["v"]
-    v = _status_uncached()
-    _status_cache["t"] = now
-    _status_cache["v"] = v
-    return v
+def _poll_loop():
+    while True:
+        _status_cache["v"] = _status_uncached()
+        _status_cache["t"] = time.time()
+        time.sleep(_STATUS_TTL)
+
+
+def start_poller():
+    """Start the background status poller once (idempotent)."""
+    global _poller_started
+    with _poller_lock:
+        if _poller_started:
+            return
+        _poller_started = True
+        threading.Thread(target=_poll_loop, daemon=True).start()
+
+
+def status(max_age=None):
+    """Cached status: 'up' | 'down' | 'logged_out' | 'no_tailscale'. Never
+    blocks — returns the last value the background poller fetched."""
+    start_poller()
+    return _status_cache["v"]
+
+def refresh_status():
+    """Force a synchronous refresh (use off the render path, e.g. after `up`)."""
+    _status_cache["v"] = _status_uncached()
+    _status_cache["t"] = time.time()
+    return _status_cache["v"]
 
 
 def _status_uncached():
@@ -67,7 +91,10 @@ def up(non_interactive=True):
     if non_interactive:
         args.append("--reset")
     r = run(args, timeout=30)
-    return bool(r and r.returncode == 0)
+    ok = bool(r and r.returncode == 0)
+    if ok:
+        refresh_status()          # update the cache immediately (not per-frame)
+    return ok
 
 
 def reachable():

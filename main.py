@@ -52,6 +52,14 @@ def main():
     # Restore persistent settings
     _restore_settings()
 
+    # Start the background Tailscale status poller so the render loop never
+    # blocks on `tailscale status` (a ~2s subprocess when the daemon is down).
+    try:
+        from network import tailscale
+        tailscale.start_poller()
+    except Exception:  # noqa: BLE001
+        pass
+
     if buttons.available:
         menus.main_menu()
     else:
