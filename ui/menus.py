@@ -61,7 +61,7 @@ def _animator_loop():
                                 region=(config.HEIGHT - 14, config.HEIGHT))
             except Exception:  # noqa: BLE001
                 pass
-        time.sleep(0.16)          # ~6 fps cat (each frame is a full-frame SPI push)
+        time.sleep(0.033)         # ~30 fps cat (partial refresh is only ~2.6ms/frame)
 
 
 def start_animator():
