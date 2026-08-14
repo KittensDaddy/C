@@ -34,6 +34,20 @@ def _nmcli_connect(ifname, ssid, psk):
     return (r.returncode == 0), (lines[-1] if lines else "")
 
 
+def _delete_profiles(ssid):
+    """Remove existing NM connection profiles for this SSID (incl. leftover
+    netplan-* duplicates). Stale/duplicate profiles make `nmcli dev wifi connect`
+    fail with an 802-11-wireless error; deleting them forces a clean new profile
+    built from the password we pass."""
+    r = run(["nmcli", "-t", "-f", "NAME", "con", "show"], timeout=8)
+    if not r:
+        return
+    for name in r.stdout.splitlines():
+        name = name.strip().replace("\\:", ":")
+        if name and (name == ssid or name.endswith("-" + ssid)):
+            run(["nmcli", "con", "delete", name], timeout=10)
+
+
 def _nm_manage(ifname, managed=True):
     """Hand an interface (back) to NetworkManager — the external attack card is
     left unmanaged during attacks, so nmcli can't use it until re-managed."""
@@ -119,8 +133,10 @@ def connect(ssid, psk, progress_cb=None, stop_flag=None):
                 pass
             _nm_manage(name, True)
 
-        # Force a clean disconnect so a re-select truly reconnects.
+        # Force a clean disconnect + drop stale/duplicate profiles so a re-select
+        # truly reconnects with the password we pass (avoids the 802-11 conflict).
         run(["nmcli", "device", "disconnect", name], timeout=15)
+        _delete_profiles(ssid)
         time.sleep(0.5)
 
         ok, err = _nmcli_connect(name, ssid, psk)
