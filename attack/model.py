@@ -71,6 +71,8 @@ class AttackEvent:
     current: Optional[int] = None
     total: Optional[int] = None
     signal: Optional[int] = None
+    countdown: Optional[int] = None    # seconds remaining in the current phase
+    cd_max: Optional[int] = None       # phase length (for the depletion gauge)
 
     def as_dict(self) -> Dict[str, Any]:
         value = {k: v for k, v in self.__dict__.items() if v is not None}

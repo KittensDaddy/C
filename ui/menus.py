@@ -94,21 +94,32 @@ def flush_events():
         pass
 
 
+VISIBLE_ROWS = 7          # FlipHUD rows that fit between header and status bar
+
+
+def _scrollbar(d, n, start, per):
+    """Right-edge scroll thumb when the list is longer than one page."""
+    if n <= per:
+        return
+    W, top, bot = config.WIDTH, 16, config.HEIGHT - 16
+    track = bot - top
+    thumb = max(8, track * per // n)
+    ty = top + (track - thumb) * start // max(1, n - per)
+    d.rectangle((W - 3, top, W - 2, bot), fill=theme.rule_color())
+    d.rectangle((W - 4, ty, W - 1, ty + thumb), fill=theme.accent_color())
+
+
 def render_list(d, labels, active, start_idx=0):
-    """Render up to OPTIONS_PER_PAGE labels, highlight active."""
+    """FlipHUD menu list: selection bar + optional scrollbar."""
     n = len(labels)
-    page = config.OPTIONS_PER_PAGE
-    start = max(0, active - page + 1)
-    end = min(n, start + page)
-    y = 15
+    per = VISIBLE_ROWS
+    start = max(0, min(active - per + 1, n - per)) if n > per else 0
+    end = min(n, start + per)
+    w = config.WIDTH - (10 if n > per else 6)
+    y = 16
     for i in range(start, end):
-        label = labels[i]
-        if i == active:
-            theme.shadowed(d, "> " + label, (3, y),
-                           font(), color=theme.highlight_color())
-        else:
-            theme.shadowed(d, "  " + label, (3, y), font())
-        y += 10
+        y = theme.list_row(d, 3, y, w, labels[i], i == active, font())
+    _scrollbar(d, n, start, per)
     status_bar(d)
 
 
@@ -488,35 +499,32 @@ def config_menu():
 def toggle_section(title, opts):
     active = 0
     n = len(opts)
-    page = config.OPTIONS_PER_PAGE
-    # fixed column where toggle dots / values are drawn (right aligned)
-    val_x = config.WIDTH - 14
+    per = VISIBLE_ROWS
 
     def _render():
         d = display.begin()
         box(d, title)
-        start = max(0, active - page + 1)
-        end = min(n, start + page)
+        start = max(0, min(active - per + 1, n - per)) if n > per else 0
+        end = min(n, start + per)
+        w = config.WIDTH - (10 if n > per else 6)
         y = 16
         for i in range(start, end):
             opt = opts[i]
             kind = opt.get("kind", "bool")
-            active_row = (i == active)
-            if active_row:
-                theme.shadowed(d, "> " + opt["name"], (2, y),
-                               font(), color=theme.highlight_color())
-            else:
-                theme.shadowed(d, "  " + opt["name"], (2, y), font())
-            # toggle dot or value on the right
-            if kind == "bool":
+            sel = (i == active)
+            val = str(opt.get("state", "")) if kind == "cycle" else None
+            theme.list_row(d, 3, y, w, opt["name"], sel, font(), value=val)
+            if kind == "bool":                    # ON/OFF dot at the right edge
                 on = bool(opt.get("state"))
-                theme.circle(d, val_x, y + 4, 3,
-                             theme.accent_color() if on else (255, 0, 0))
-            else:
-                theme.shadowed(d, opt.get("state", ""), (val_x - 26, y),
-                               font(), color=theme.highlight_color() if active_row
-                               else theme.palette()["text"])
-            y += 10
+                cx, cy = 3 + w - 9, y + 6
+                fg = theme.background() if sel else \
+                    (theme.accent_color() if on else theme.dim_color())
+                if on:
+                    theme.circle(d, cx, cy, 3, fg)
+                else:
+                    d.ellipse((cx - 3, cy - 3, cx + 3, cy + 3), outline=fg)
+            y += 14
+        _scrollbar(d, n, start, per)
         status_bar(d)
         display.show()
 

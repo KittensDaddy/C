@@ -92,9 +92,7 @@ def capture(mon, target, req, emit, stop_flag):
                                  current=num_deauth))
 
             emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
-                             phase="WPA Handshake capture",
-                             detail="Listening timeout:%02d:%02d" %
-                             (remaining // 60, remaining % 60)))
+                             phase="HS", countdown=remaining, cd_max=timeout))
 
             if _has_handshake(cap, bssid):
                 emit(AttackEvent(EventType.HANDSHAKE, essid=essid, bssid=bssid))

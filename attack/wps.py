@@ -116,9 +116,11 @@ def pixie(mon, target, req, emit, stop_flag):
                 emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
                                  detail="no pin"))
                 break
-            # Heartbeat for the live status screen.
+            # Heartbeat for the live status screen (structured countdown).
             emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
-                             phase="WPS Pixie-Dust", detail=line[:32]))
+                             phase="PIXIE",
+                             countdown=max(0, int(timeout - (time.time() - start))),
+                             cd_max=timeout))
     finally:
         try:
             proc.terminate()

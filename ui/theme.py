@@ -147,3 +147,83 @@ SPINNER = "|/-\\"
 
 def spinner(tick):
     return SPINNER[tick % len(SPINNER)]
+
+
+# ---------------------------------------------------------------------------
+# FlipHUD design system — type scale + compact-HUD primitives.
+# Look: true-black ground, one accent, hierarchy via thin grey elevation rules
+# (no boxes). Inspired by Flipper FlipCTL + pwnagotchi, tuned for 128x128.
+# ---------------------------------------------------------------------------
+HERO = 15     # current target / phase
+BODY = 11     # menu items, results, log
+MICRO = 9     # status strip, counters, HUD labels
+
+
+def dim_color():
+    """Muted grey for spent / failed / secondary text."""
+    return mix(background(), text_color(), 0.45)
+
+
+def rule_color():
+    """Faint 1px divider — 'elevation', not a border."""
+    return mix(background(), text_color(), 0.22)
+
+
+def hline(draw, y, x0=0, x1=None):
+    if x1 is None:
+        x1 = config.WIDTH
+    draw.line((x0, y, x1, y), fill=rule_color())
+
+
+def list_row(draw, x, y, w, label, selected, fnt, value=None):
+    """One menu row, Flipper style: selected = filled accent bar with a left
+    caret and background-coloured text; unselected = plain text. `value` (e.g. a
+    toggle state) is right-aligned."""
+    h = 13
+    if selected:
+        rrect(draw, (x, y, x + w, y + h), 3, fill=accent_color())
+        fg = background()
+        draw.text((x + 3, y + 1), "▸", font=fnt, fill=fg)   # ▸
+        draw.text((x + 12, y + 1), label, font=fnt, fill=fg)
+    else:
+        fg = text_color()
+        draw.text((x + 12, y + 1), label, font=fnt, fill=fg)
+    if value is not None:
+        try:
+            vw = draw.textlength(value, font=fnt)
+        except Exception:  # noqa: BLE001
+            vw = len(value) * 6
+        draw.text((x + w - vw - 4, y + 1), value, font=fnt, fill=fg)
+    return y + h + 1
+
+
+def page_dots(draw, x, y, pages, active):
+    """Tiny right-edge page indicator."""
+    for i in range(pages):
+        col = accent_color() if i == active else rule_color()
+        draw.ellipse((x + i * 5, y, x + i * 5 + 2, y + 2), fill=col)
+
+
+def signal_bars(draw, x, y, dbm, bars=4, bw=2, gap=1, maxh=8):
+    """4-bar signal glyph from a dBm value (-30 strong … -90 weak)."""
+    if dbm is None:
+        lit = 0
+    else:
+        lit = max(0, min(bars, int(round((dbm + 90) / 15.0))))   # -90→0 .. -30→4
+    for i in range(bars):
+        bh = int(maxh * (i + 1) / bars)
+        bx = x + i * (bw + gap)
+        col = accent_color() if i < lit else rule_color()
+        draw.rectangle((bx, y + (maxh - bh), bx + bw, y + maxh), fill=col)
+    return x + bars * (bw + gap)
+
+
+def counters(draw, x, y, cracked, handshakes, fnt):
+    """◆N cracked (accent) · ~N handshakes (highlight), compact."""
+    s1 = "◆%d" % cracked          # ◆
+    draw.text((x, y), s1, font=fnt, fill=accent_color())
+    try:
+        w1 = draw.textlength(s1 + " ", font=fnt)
+    except Exception:  # noqa: BLE001
+        w1 = len(s1) * 7
+    draw.text((x + w1, y), "~%d" % handshakes, font=fnt, fill=highlight_color())

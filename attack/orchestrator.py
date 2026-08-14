@@ -119,7 +119,13 @@ def _resolve_targets(iface_name, req, preset, status_cb, stop_flag):
     dur = int((preset or {}).get("scan", config.opt_int(req.timing, "Scan Time", 30)))
     if status_cb:
         status_cb({"type": "message", "text": "scanning %ds..." % dur})
-    nets = sc.scan(iface_name, duration=dur, stop_flag=stop_flag)
+
+    def _scan_progress(n):
+        if status_cb:
+            status_cb({"type": "scan", "targets": n, "clients": 0})
+
+    nets = sc.scan(iface_name, duration=dur, progress_cb=_scan_progress,
+                   stop_flag=stop_flag)
     config.Runtime.last_scan = nets
     nets = sc.sort_by_signal(_filtered(nets, req))
     cap = config.opt_int(req.filters, "Max Targets", None)

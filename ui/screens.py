@@ -3,7 +3,6 @@
 connect/upload progress. These are rendering + view-state helpers.
 """
 import time
-import re
 from PIL import ImageFont
 
 import config
@@ -14,8 +13,9 @@ from hardware.display import display
 from network import tailscale
 
 
-def font():
-    return ImageFont.load_default()
+def font(size=None):
+    """Default UI font = FlipHUD BODY; pass a size for HERO/MICRO."""
+    return theme.font(size if size is not None else theme.BODY)
 
 
 def _battery_bars(draw, x, y, pct):
@@ -62,13 +62,22 @@ def status_bar(draw):
 
 
 def header(draw, title, show_ts=True):
-    draw.rectangle((0, 0, config.WIDTH, 11), fill=theme.shadow_color())
-    theme.shadowed(draw, title, (3, 1), font(), color=theme.highlight_color())
+    """FlipHUD top strip: title (left) · battery% + TS dot (right) · thin rule."""
+    W = config.WIDTH
+    tf = font(theme.BODY)
+    limit = W - 44 if show_ts else W - 6      # leave room for battery% + TS
+    while title and draw.textlength(title, font=tf) > limit:
+        title = title[:-1]
+    theme.shadowed(draw, title, (3, 0), tf, color=theme.highlight_color())
     if show_ts:
-        st = tailscale.status()
-        col = theme.accent_color() if st == "up" else (255, 0, 0)
-        theme.shadowed(draw, "TS", (config.WIDTH - 18, 1), font(), color=col)
-    draw.line((0, 12, config.WIDTH, 12), fill=theme.palette()["text"])
+        pct, _ = battery.battery.read()
+        if pct is not None:
+            theme.shadowed(draw, "%d%%" % pct, (W - 38, 2), font(theme.MICRO),
+                           color=theme.dim_color())
+        up = tailscale.status() == "up"
+        draw.text((W - 14, 2), "TS", font=font(theme.MICRO),
+                  fill=theme.accent_color() if up else theme.dim_color())
+    theme.hline(draw, 13)
 
 
 def box(draw, title):
@@ -81,11 +90,24 @@ def box(draw, title):
 
 def render_splash():
     d = display.begin()
-    # simple centered logo
-    label = "WIFI-BOX v2"
-    d.rectangle((0, 0, config.WIDTH, config.HEIGHT), fill=theme.background())
-    theme.shadowed(d, label, (config.WIDTH // 2 - 40, config.HEIGHT // 2 - 6),
-                   font(), color=theme.accent_color())
+    W, H = config.WIDTH, config.HEIGHT
+    d.rectangle((0, 0, W, H), fill=theme.background())
+    hero = font(theme.HERO)
+    label = "WIFI-BOX"
+    try:
+        tw = d.textlength(label, font=hero)
+    except Exception:  # noqa: BLE001
+        tw = 80
+    x = int((W - tw) / 2)
+    theme.shadowed(d, label, (x, 44), hero, color=theme.accent_color())
+    theme.hline(d, 64, x, x + int(tw))
+    tag = "WPA · WPS · 2.4/5G"
+    try:
+        tgw = d.textlength(tag, font=font(theme.MICRO))
+    except Exception:  # noqa: BLE001
+        tgw = 100
+    theme.shadowed(d, tag, (int((W - tgw) / 2), 70), font(theme.MICRO),
+                   color=theme.dim_color())
     status_bar(d)
     display.show()
 
@@ -104,8 +126,8 @@ class AttackStatus:
         self.target_cur = 0
         self.target_total = 0
         self.cur_essid = ""
-        self.cur_phase = ""       # short label: SCAN / WPS / PIXIE / PIN / HS / DEAUTH / CRACK
-        self.cur_timeout = ""     # "0:38" countdown pulled from the engine, if any
+        self.cur_phase = ""       # short code straight from the engine: HS/PIXIE/PMKID/DEAUTH/CRACK
+        self.cur_countdown = None # int seconds remaining in the current phase
         self.scan_targets = 0     # live count while the engine is still scanning
         self.scan_clients = 0
         self.started = False      # True once the engine emits its first real event
@@ -149,7 +171,7 @@ class AttackStatus:
             self.scan_clients = ev.get("clients", 0)
             self.cur_essid = ""
             self.cur_phase = ""
-            self.cur_timeout = ""
+            self.cur_countdown = None
         elif t == "attack":
             if essid != self.cur_essid:      # moved to a new target -> reset
                 self.target_start = time.time()
@@ -157,27 +179,27 @@ class AttackStatus:
                 self.cur_clients = 0
             self.cur_essid = essid
             self.cur_phase = ""       # no chip until a real phase arrives
-            self.cur_timeout = ""
+            self.cur_countdown = None
             if ev.get("current") and ev.get("total"):
                 self.target_cur = ev["current"]
                 self.target_total = ev["total"]
         elif t == "phase":
             if essid:
                 self.cur_essid = essid
-            self.cur_phase = _phase_label(ev.get("phase", ""), ev.get("detail", ""))
-            self.cur_timeout = _timeout(ev.get("detail", ""))
+            self.cur_phase = ev.get("phase", "") or ""   # already a short code
+            self.cur_countdown = ev.get("countdown")
             if ev.get("signal") is not None:
                 self.cur_signal = ev["signal"]
             if ev.get("clients") is not None:
                 self.cur_clients = ev["clients"]
-            self._track_countdown()
+            self._track_countdown(ev.get("cd_max"))
         elif t == "deauth":
             self.last_deauth = time.time()
             if ev.get("signal") is not None:
                 self.cur_signal = ev["signal"]
         elif t == "cracking":
             self.cur_phase = "CRACK"
-            self.cur_timeout = ""
+            self.cur_countdown = None
         elif t == "handshake":
             self._set(essid, "handshake")
         elif t == "pmkid":
@@ -209,24 +231,39 @@ class AttackStatus:
         f = sum(1 for r in self.results if r[1] in ("failed", "skipped"))
         return c, h, f
 
-    def _track_countdown(self):
-        """Remember the largest countdown per phase so the gauge can deplete."""
+    def _track_countdown(self, cd_max=None):
+        """Track the phase length so the gauge can deplete. Prefer the engine's
+        cd_max; else remember the largest countdown seen this phase."""
         key = (self.cur_essid, self.cur_phase)
         if key != self._phase_key:
             self._phase_key = key
             self._cd_max = None
-        secs = _to_secs(self.cur_timeout)
-        if secs is not None and (self._cd_max is None or secs > self._cd_max):
-            self._cd_max = secs
+        if cd_max:
+            self._cd_max = max(self._cd_max or 0, cd_max)
+        elif self.cur_countdown is not None:
+            self._cd_max = max(self._cd_max or 0, self.cur_countdown)
 
     # -- rendering --------------------------------------------------------
-    def render(self, force=False):
-        """Monochrome cyberpunk layout: text is white-on-dark with a shadow;
-        only the battery and the progress/countdown bars carry colour.
+    @staticmethod
+    def _fit(d, text, fnt, maxw):
+        """Clip text to fit maxw px (proportional font — measure, don't count)."""
+        if not text:
+            return ""
+        try:
+            while text and d.textlength(text, font=fnt) > maxw:
+                text = text[:-1]
+        except Exception:  # noqa: BLE001
+            return text[:max(1, int(maxw / 6))]
+        return text
 
-        Frame-rate capped: the engine emits many events/sec and each would trigger a
-        full SPI repaint, so intermediate frames are dropped. State is still
-        updated by handle_event; the next allowed frame shows the latest."""
+    def _cd_str(self):
+        s = self.cur_countdown
+        return "" if s is None else "%d:%02d" % (s // 60, s % 60)
+
+    def render(self, force=False):
+        """FlipHUD live attack screen: true-black ground, one accent, thin grey
+        elevation rules. Frame-rate capped — the engine emits many events/sec, so
+        intermediate frames drop; state is kept by handle_event."""
         now = time.time()
         if not force and now - self._last_paint < 0.1:
             return
@@ -234,143 +271,116 @@ class AttackStatus:
         self._tick += 1
         d = display.begin()
         W, H = config.WIDTH, config.HEIGHT
-        WHITE = (245, 245, 245)
-        fnt = font()
-        d.rectangle((0, 0, W, H), fill=theme.background())
+        WHITE = theme.text_color()
+        micro, body, hero = font(theme.MICRO), font(theme.BODY), font(theme.HERO)
         c, h, f = self.summary()
 
-        # Header: interface + driver (+ TS state, shown mono via +/-).
-        d.rectangle((0, 0, W, 12), fill=theme.shadow_color())
-        theme.shadowed(d, self._header_title(), (3, 1), fnt, color=WHITE)
-        ts = tailscale.status()
-        theme.shadowed(d, "TS+" if ts == "up" else "TS-", (W - 20, 1), fnt,
-                       color=WHITE)
-        d.line((0, 12, W, 12), fill=WHITE)
+        # --- top status strip: iface (left) · battery% + TS dot (right) ---
+        theme.shadowed(d, self._fit(d, self._header_title(), micro, W - 42),
+                       (3, 1), micro, color=WHITE)
+        pct, _ = battery.battery.read()
+        if pct is not None:
+            theme.shadowed(d, "%d%%" % pct, (W - 34, 1), micro,
+                           color=theme.dim_color())
+        ts_up = tailscale.status() == "up"
+        d.text((W - 13, 1), "TS", font=micro,
+               fill=theme.accent_color() if ts_up else theme.dim_color())
+        theme.hline(d, 11)
 
         if not self.started:
-            # the engine is still initialising — monitor mode, killing conflicting
-            # processes, loading. Show its boot output; scanning hasn't begun.
             theme.shadowed(d, "STARTING %s" % theme.spinner(self._tick),
-                           (3, 15), fnt, color=WHITE)
-            theme.shadowed(d, "%ds" % int(time.time() - self.start_time),
-                           (W - 28, 15), fnt, color=WHITE)
+                           (3, 22), body, color=WHITE)
             if self.last_msg:
-                theme.shadowed(d, self.last_msg[:21], (3, 29), fnt,
-                               color=theme.accent_color())
-            theme.shadowed(d, "waiting for scan", (3, 45), fnt, color=WHITE)
+                theme.shadowed(d, self._fit(d, self.last_msg, micro, W - 6),
+                               (3, 42), micro, color=theme.accent_color())
             status_bar(d)
             display.show()
             return
 
         attacking = self.target_total > 0 or bool(self.cur_essid) or bool(self.results)
-        # Header line: "3/12" + bar while attacking, else "SCANNING".
-        theme.shadowed(d, "%d/%d" % (self.target_cur, self.target_total)
-                       if self.target_total else ("SCANNING" if not attacking else "prep"),
-                       (3, 15), fnt, color=WHITE)
+
+        # --- counter row: ATK c/t · tick bar · ◆cracked ~hs ---
+        head = "ATK %d/%d" % (self.target_cur, self.target_total) if self.target_total \
+            else ("SCAN" if not attacking else "PREP")
+        theme.shadowed(d, head, (3, 13), micro, color=WHITE)
         if self.target_total:
-            theme.progress_bar(d, 34, 16, W - 66, 5,
-                               100 * self.target_cur // self.target_total)
-        theme.shadowed(d, "OK%d" % (c + h), (W - 28, 15), fnt, color=WHITE)
+            theme.progress_bar(d, 52, 15, 30, 4,
+                               100 * self.target_cur // max(1, self.target_total))
+        theme.counters(d, W - 40, 13, c, h, micro)
 
         if not attacking:
-            # Scanning: live count that climbs as the engine finds APs / clients.
-            theme.shadowed(d, "%s %d APs  %d STA" % (theme.spinner(self._tick),
-                           self.scan_targets, self.scan_clients),
-                           (3, 27), fnt, color=theme.accent_color())
+            # Scanning: big count that climbs as the engine finds APs.
+            theme.shadowed(d, "%s SCANNING" % theme.spinner(self._tick),
+                           (3, 34), hero, color=theme.accent_color())
+            theme.shadowed(d, "%d APs found" % self.scan_targets,
+                           (3, 56), body, color=WHITE)
+            theme.hline(d, 74)
         else:
-            # Line 2: current target + phase + countdown (coloured gauge bar).
-            cur = (self.cur_essid or "...")[:12]
-            if self.cur_phase:
-                cur = "%s %s" % (cur[:9], self.cur_phase[:6])
-            theme.shadowed(d, cur[:21], (3, 27), fnt, color=WHITE)
-            secs = _to_secs(self.cur_timeout)
-            if self.cur_timeout:
-                theme.shadowed(d, self.cur_timeout, (W - 28, 27), fnt, color=WHITE)
-            # Line 3: signal · clients · deauth pulse · elapsed-on-target.
-            theme.shadowed(d, self._info_line(), (3, 37), fnt, color=WHITE)
-            # Line 4: countdown gauge (or a plain divider when no countdown).
-            if self.cur_timeout:
-                pct = int(100 * secs / self._cd_max) if (secs and self._cd_max) else 100
-                theme.progress_bar(d, 3, 47, W - 6, 4, pct, color=theme.gauge_color(secs))
+            # --- hero: current target + phase pill ---
+            name = self.cur_essid or "..."
+            phase = self.cur_phase
+            pill_w = 0
+            if phase:
+                try:
+                    pill_w = int(d.textlength(phase, font=micro)) + 12
+                except Exception:  # noqa: BLE001
+                    pill_w = len(phase) * 7 + 12
+                theme.pill(d, W - pill_w - 1, 25, phase, micro)
+            theme.shadowed(d, self._fit(d, name, hero, W - pill_w - 6),
+                           (3, 24), hero, color=WHITE)
+
+            # --- HUD line: signal bars · clients · deauth pulse · countdown ---
+            hx = theme.signal_bars(d, 3, 45, self.cur_signal) + 5
+            theme.shadowed(d, "%d sta" % self.cur_clients, (hx, 44), micro,
+                           color=WHITE)
+            if time.time() - self.last_deauth < 2.5 and self._tick % 2:
+                theme.shadowed(d, "DEAUTH", (hx + 34, 44), micro,
+                               color=theme.highlight_color())
+            cd = self._cd_str()
+            if cd:
+                theme.shadowed(d, cd, (W - 26, 44), micro, color=WHITE)
+
+            # --- countdown gauge ---
+            secs = self.cur_countdown
+            if secs is not None and self._cd_max:
+                pct = int(100 * secs / self._cd_max)
+                theme.progress_bar(d, 3, 56, W - 6, 4, pct,
+                                   color=theme.gauge_color(secs))
             else:
-                d.line((0, 48, W, 48), fill=WHITE)
+                theme.hline(d, 58)
 
-        if not attacking:
-            d.line((0, 45, W, 45), fill=WHITE)
-
-        # Running log of previous attacks, each quoted with its outcome/reason.
-        y, bottom = 53, H - 20
-        for essid, status, cred in self.results[-6:]:
+        # --- results log: newest first, colored glyphs ---
+        y, bottom = 65, H - 15
+        glyphs = {"cracked": ("◆", theme.accent_color()),
+                  "handshake": ("~", theme.highlight_color()),
+                  "failed": ("·", theme.dim_color()),
+                  "skipped": ("·", theme.dim_color())}
+        for essid, status, cred in reversed(self.results[-6:]):
             if y > bottom:
                 break
-            ok = status in ("cracked", "handshake")
+            glyph, col = glyphs.get(status, ("·", theme.dim_color()))
             if status == "cracked" and cred:
-                tail = cred[:9]
-            elif ok:
-                tail = "success"
-            elif status == "skipped":
-                tail = (cred or "skip")[:9]
-            else:                                   # failed -> reason
-                tail = (cred or "failed")[:9]
-            glyph = "+" if ok else "-"
-            theme.shadowed(d, ("%s %s %s" % (glyph, (essid or "?")[:9], tail))[:21],
-                           (3, y), fnt, color=WHITE)
-            y += 10
+                tail = str(cred)
+            elif status == "handshake":
+                tail = "got hs"
+            else:
+                tail = str(cred or status)
+            d.text((3, y), glyph, font=body, fill=col)
+            theme.shadowed(d, self._fit(d, essid or "?", body, 64),
+                           (13, y), body, color=WHITE)
+            tw = 44
+            theme.shadowed(d, self._fit(d, tail, body, tw), (W - tw - 2, y),
+                           body, color=theme.dim_color())
+            y += 12
 
         status_bar(d)
         display.show()
-
-    def _info_line(self):
-        """signal · clients · deauth pulse · elapsed-on-target, kept compact."""
-        parts = []
-        if self.cur_signal is not None:
-            parts.append("%ddB" % self.cur_signal)
-        parts.append("%dc" % self.cur_clients)
-        if time.time() - self.last_deauth < 2.5:      # recent deauth -> blink
-            parts.append("DEA" if self._tick % 2 else "   ")
-        parts.append("%ds" % int(time.time() - self.target_start))
-        return " ".join(parts)[:21]
-
-
-def _phase_label(phase, detail):
-    """Short human phase tag for the current-attack line."""
-    p = (phase or "").upper()
-    if "PIXIE" in p:
-        return "PIXIE"
-    if "PIN" in p:
-        return "PIN"
-    if "HANDSHAKE" in p or ("WPA" in p and "DEAUTH" not in p):
-        return "HS"           # client count is shown on the info line
-    if "DEAUTH" in p:
-        return "DEAUTH"
-    if "CRACK" in p:
-        return "CRACK"
-    return (p.replace("WPS ", "").replace("WPA ", "") or "atk")[:6]
-
-
-def _timeout(detail):
-    """Pull a live countdown (m:ss) out of the phase detail, if present."""
-    detail = detail or ""
-    m = re.search(r"timeout[:=]\s*(\d+):(\d+)", detail, re.I)
-    if not m:
-        m = re.search(r"\[(\d+):(\d+)\]", detail)      # WPS "[00:38] Sending M5"
-    if not m:
-        m = re.search(r"\b(\d+):(\d{2})\b", detail)
-    if not m:
-        return ""
-    return "%d:%02d" % (int(m.group(1)), int(m.group(2)))
-
-
-def _to_secs(mmss):
-    """'3:42' -> 222 seconds, or None."""
-    m = re.match(r"(\d+):(\d{2})$", mmss or "")
-    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
 
 
 def _format_plan(lines, mode, iface, driver):
     """Turn a native attack plan (list of 'key: value' strings) into display
     rows: (text, kind)."""
-    rows = [("ATTACK", "bin"), ((mode or "custom").upper(), "mode")]
+    rows = [((mode or "custom").upper(), "mode")]
     if iface:
         rows.append(("%s %s" % (iface, driver or ""), "iface"))
     for ln in (lines or []):
@@ -395,36 +405,39 @@ class CommandPreview:
         self._tick += 1
         d = display.begin()
         W, H = config.WIDTH, config.HEIGHT
-        WHITE = (245, 245, 245)
-        fnt = font()
-        d.rectangle((0, 0, W, H), fill=(6, 6, 6))
-        for yy in range(0, H, 3):           # scanline texture (dark grey)
-            d.line((0, yy, W, yy), fill=(16, 16, 16))
+        WHITE = theme.text_color()
+        body, micro = font(theme.BODY), font(theme.MICRO)
+        d.rectangle((0, 0, W, H), fill=theme.background())
+        for yy in range(14, H - 14, 3):     # faint scanline texture
+            d.line((0, yy, W, yy), fill=theme.mix(theme.background(),
+                                                  theme.text_color(), 0.06))
 
-        # inverted header band (white bar, black text) + blinking REC block
-        d.rectangle((0, 0, W, 12), fill=WHITE)
-        gx = 3 + (self._tick % 2)           # 1px jitter = glitch feel
-        theme.shadowed(d, "RECHECK CMD", (gx, 1), fnt, color=(0, 0, 0),
-                       shadow=(120, 120, 120))
+        # accent header bar (bg-coloured text) + blinking REC dot
+        d.rectangle((0, 0, W, 12), fill=theme.accent_color())
+        d.text((3, 0), "ATTACK PLAN", font=body, fill=theme.background())
         if self._tick % 2:
-            d.rectangle((W - 10, 2, W - 4, 9), fill=(0, 0, 0))
+            theme.circle(d, W - 7, 6, 3, theme.background())
 
         # revealed rows, scrolled so the newest stays visible
         visible = self.rows[:upto]
-        lh, top = 10, 15
-        max_rows = (H - top - 10) // lh
+        lh, top = 12, 16
+        max_rows = (H - top - 12) // lh
         start = max(0, len(visible) - max_rows)
         y = top
-        prefix = {"bin": "", "mode": "> ", "iface": "# "}
+        prefix = {"bin": "", "mode": "▸ ", "iface": "# "}
+        color = {"bin": theme.dim_color(), "mode": theme.highlight_color(),
+                 "iface": theme.dim_color()}
         for text, kind in visible[start:]:
-            theme.shadowed(d, (prefix.get(kind, "\xbb ") + text)[:21], (3, y),
-                           fnt, color=WHITE)
+            txt = prefix.get(kind, "» ") + text
+            while txt and d.textlength(txt, font=body) > W - 6:
+                txt = txt[:-1]
+            theme.shadowed(d, txt, (3, y), body, color=color.get(kind, WHITE))
             y += lh
-        # blinking block cursor after the last revealed row
-        if self._tick % 2 and y < H - 10:
-            d.rectangle((4, y, 9, y + 7), fill=WHITE)
+        if self._tick % 2 and y < H - 12:   # blinking block cursor
+            d.rectangle((4, y + 1, 8, y + 8), fill=theme.accent_color())
 
-        theme.shadowed(d, "PRESS run  K1 back", (3, H - 9), fnt, color=WHITE)
+        theme.shadowed(d, "PRESS run   K1 back", (3, H - 11), micro,
+                       color=theme.dim_color())
         display.show()
 
 
@@ -443,15 +456,23 @@ class ProgressView:
     def render(self):
         d = display.begin()
         box(d, self.title)
-        y = 16
+        body = font(theme.BODY)
+        y = 17
         for ln in self.lines:
-            if y > config.HEIGHT - 12:
+            if y > config.HEIGHT - 15:
                 break
-            color = theme.accent_color() if ln.startswith("OK") or \
-                "done" in ln.lower() else theme.palette()["text"]
-            if ln.startswith("ERR"):
-                color = (255, 0, 0)
-            theme.shadowed(d, ln[:config.MAX_CHARS_PER_LINE], (3, y), font(),
-                           color=color)
-            y += 10
+            low = ln.lower()
+            if ln.startswith(("OK", "KEY")) or "done" in low:
+                color = theme.accent_color()
+            elif ln.startswith("HS"):
+                color = theme.highlight_color()
+            elif ln.startswith("ERR"):
+                color = (255, 60, 60)
+            else:
+                color = theme.text_color()
+            txt = ln
+            while txt and d.textlength(txt, font=body) > config.WIDTH - 6:
+                txt = txt[:-1]
+            theme.shadowed(d, txt, (3, y), body, color=color)
+            y += 13
         display.show()

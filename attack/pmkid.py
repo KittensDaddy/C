@@ -39,7 +39,7 @@ def capture(mon, target, req, emit, stop_flag):
     cmd = [tools.HCXDUMP, "-i", mon, "-w", pcapng,
            "--enable_status=1"]
     emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
-                     phase="PMKID capture", detail="listening"))
+                     phase="PMKID", countdown=timeout, cd_max=timeout))
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL)
