@@ -155,7 +155,6 @@ install_packages() {
         aircrack-ng reaver bully hashcat hcxtools hcxdumptool
         macchanger wireless-tools iw iproute2
         network-manager dnsutils curl git
-        wordlists
         tailscale
     )
     local total=${#pkgs[@]}
@@ -172,12 +171,17 @@ install_packages() {
         fi
     done
     echo
-    # The `wordlists` package ships rockyou gzipped; unpack it for on-box cracking.
-    if [[ -f /usr/share/wordlists/rockyou.txt.gz && ! -f /usr/share/wordlists/rockyou.txt ]]; then
-        gunzip -k /usr/share/wordlists/rockyou.txt.gz >> "$LOG" 2>&1 || true
+    # rockyou for on-box cracking. Pi OS has no `wordlists` package (that's Kali),
+    # so fetch the plaintext copy directly. Optional — server-crack works without it.
+    if [[ ! -f /usr/share/wordlists/rockyou.txt ]]; then
+        info "downloading rockyou wordlist (~133MB)..."
+        mkdir -p /usr/share/wordlists
+        curl -fsSL -o /usr/share/wordlists/rockyou.txt \
+            https://github.com/brannondorsey/naive-hashcat/releases/download/data/rockyou.txt \
+            >> "$LOG" 2>&1 || true
     fi
     [[ -f /usr/share/wordlists/rockyou.txt ]] && ok "rockyou wordlist ready" \
-        || warn "rockyou wordlist not found (on-box crack will be unavailable)"
+        || warn "rockyou download failed (on-box crack unavailable; server-crack still works)"
     ok "All packages processed (see $LOG for details)"
 }
 
