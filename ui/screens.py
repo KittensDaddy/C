@@ -273,7 +273,7 @@ class AttackStatus:
         elevation rules. Frame-rate capped — the engine emits many events/sec, so
         intermediate frames drop; state is kept by handle_event."""
         now = time.time()
-        if not force and now - self._last_paint < 0.2:   # cap full-frame pushes ~5fps
+        if not force and now - self._last_paint < 0.1:   # cap full-frame pushes ~10fps
             return
         self._last_paint = now
         self._tick += 1
@@ -337,8 +337,15 @@ class AttackStatus:
                 except Exception:  # noqa: BLE001
                     pill_w = len(phase) * 7 + 12
                 theme.pill(d, W - pill_w - 1, 25, phase, micro)
-            theme.shadowed(d, self._fit(d, name, hero, W - pill_w - 6),
-                           (3, 24), hero, color=WHITE)
+            hero_w = W - pill_w - 6
+            try:
+                fits = d.textlength(name, font=hero) <= hero_w
+            except Exception:  # noqa: BLE001
+                fits = True
+            if fits:
+                theme.shadowed(d, name, (3, 24), hero, color=WHITE)
+            else:
+                theme.marquee(d, 3, 24, name, hero_w, hero, WHITE)
 
             # --- HUD line: signal bars · clients · deauth pulse · countdown ---
             hx = theme.signal_bars(d, 3, 45, self.cur_signal) + 6

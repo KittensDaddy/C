@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """Color themes and lightweight drawing helpers used across the UI."""
+import time
+
 from PIL import ImageFont
 
 import config
@@ -175,25 +177,54 @@ def hline(draw, y, x0=0, x1=None):
     draw.line((x0, y, x1, y), fill=rule_color())
 
 
+def _clip(draw, text, fnt, maxw):
+    try:
+        while text and draw.textlength(text, font=fnt) > maxw:
+            text = text[:-1]
+    except Exception:  # noqa: BLE001
+        return text[:max(1, int(maxw / 6))]
+    return text
+
+
+def marquee(draw, x, y, text, width, fnt, color, speed=5.0):
+    """Draw `text` at (x,y). If it's wider than `width`, scroll it horizontally
+    (looping with a separator) so the whole line can be read over time. Clip-free
+    — always fits within `width`. Callers must repaint periodically to animate."""
+    try:
+        fits = draw.textlength(text, font=fnt) <= width
+    except Exception:  # noqa: BLE001
+        fits = len(text) * 6 <= width
+    if fits:
+        draw.text((x, y), text, font=fnt, fill=color)
+        return
+    padded = text + "   -   "
+    idx = int(time.time() * speed) % len(padded)
+    rolled = padded[idx:] + padded[:idx]
+    draw.text((x, y), _clip(draw, rolled, fnt, width), font=fnt, fill=color)
+
+
 def list_row(draw, x, y, w, label, selected, fnt, value=None):
     """One menu row, Flipper style: selected = filled accent bar with a left
     caret and background-coloured text; unselected = plain text. `value` (e.g. a
-    toggle state) is right-aligned."""
+    toggle state) is right-aligned. The selected row marquees if it overflows."""
     h = 13
+    vw = 0
+    if value is not None:
+        try:
+            vw = int(draw.textlength(value, font=fnt)) + 6
+        except Exception:  # noqa: BLE001
+            vw = len(value) * 6 + 6
+    lab_w = w - 14 - vw
     if selected:
         rrect(draw, (x, y, x + w, y + h), 3, fill=accent_color())
         fg = background()
         draw.text((x + 3, y + 1), "▸", font=fnt, fill=fg)   # ▸
-        draw.text((x + 12, y + 1), label, font=fnt, fill=fg)
+        marquee(draw, x + 12, y + 1, label, lab_w, fnt, fg)
     else:
         fg = text_color()
-        draw.text((x + 12, y + 1), label, font=fnt, fill=fg)
+        draw.text((x + 12, y + 1), _clip(draw, label, fnt, lab_w), font=fnt, fill=fg)
     if value is not None:
-        try:
-            vw = draw.textlength(value, font=fnt)
-        except Exception:  # noqa: BLE001
-            vw = len(value) * 6
-        draw.text((x + w - vw - 4, y + 1), value, font=fnt, fill=fg)
+        draw.text((x + w - vw + 2, y + 1), value, font=fnt, fill=fg)
     return y + h + 1
 
 

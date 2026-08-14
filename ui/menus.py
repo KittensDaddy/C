@@ -69,6 +69,39 @@ def start_animator():
     if _anim_thread is None:
         _anim_thread = threading.Thread(target=_animator_loop, daemon=True)
         _anim_thread.start()
+    start_marquee()
+
+
+# --------------------------------------------------------------------------
+# Marquee ticker: a list screen registers a repaint callback so overflowing
+# text on the active row can scroll while idle (menus are event-driven and
+# otherwise only repaint on a keypress).
+# --------------------------------------------------------------------------
+_repaint_cb = None
+_marquee_thread = None
+
+
+def set_repaint(cb):
+    global _repaint_cb
+    _repaint_cb = cb
+
+
+def _marquee_loop():
+    while True:
+        cb = _repaint_cb
+        if cb is not None:
+            try:
+                cb()
+            except Exception:  # noqa: BLE001
+                pass
+        time.sleep(0.12)          # ~8 fps marquee scroll
+
+
+def start_marquee():
+    global _marquee_thread
+    if _marquee_thread is None:
+        _marquee_thread = threading.Thread(target=_marquee_loop, daemon=True)
+        _marquee_thread.start()
 
 
 def _on_button(ev):
@@ -288,7 +321,9 @@ def scan_attack():
         display.show()
 
     _render()
-    while True:
+    set_repaint(_render)
+    try:
+      while True:
         ev = wait_event()
         if not ev:
             continue
@@ -305,6 +340,7 @@ def scan_attack():
                 config.Runtime.target_bssids = list(selected)
                 config.Runtime.target_bssid = None      # use the multi list
                 config.Runtime.target_essid = None
+                set_repaint(None)
                 choose_mode("%d targets" % len(selected))
                 return
             n = nets[active - 1]
@@ -316,6 +352,8 @@ def scan_attack():
         elif ev["type"] == "key1":
             config.Runtime.target_bssids = []
             return
+    finally:
+        set_repaint(None)
 
 
 def choose_mode(essid):
@@ -443,24 +481,16 @@ def run_and_show(preset):
     monitor = threading.Thread(target=stop_check, daemon=True)
     monitor.start()
 
-    # Repaint ~2x/sec so the countdown ticks and the deauth/spinner animate even
-    # between the engine's sparser heartbeat events.
-    done = threading.Event()
-
-    def ticker():
-        while not done.is_set():
-            if st.started:
-                st.render()
-            done.wait(0.5)
-
-    threading.Thread(target=ticker, daemon=True).start()
+    # Drive repaints through the marquee ticker (~8x/sec) so the countdown ticks,
+    # the deauth/spinner animate, and long ESSIDs/keys scroll on the attack screen.
+    set_repaint(st.render)
 
     try:
         res = orchestrator.run(iface, preset=preset,
                                progress_cb=progress, status_cb=status_ev,
                                stop_flag=stop)
     finally:
-        done.set()
+        set_repaint(None)
         set_animated(True)      # hand the cat animator back to the menus
 
     # summary
@@ -671,34 +701,38 @@ def cracked_viewer():
                              e.get("psk") or ("PIN %s" % e["pin"] if e.get("pin")
                                               else "no-psk"))
                 for e in entries]
-    d = display.begin()
-    box(d, "CRACKED")
-    render_list(d, labels(), active)
-    display.show()
-    while True:
-        ev = wait_event()
-        if not ev:
-            continue
-        active = _move(active, len(entries), ev)
-        if ev["type"] in ("up", "down"):
-            d = display.begin()
-            box(d, "CRACKED")
-            render_list(d, labels(), active)
-            display.show()
-        elif ev["type"] == "press":
-            psk = entries[active].get("psk")
-            if psk:
-                config.Runtime.target_essid = entries[active]["essid"]
-                connect_to_ssid(entries[active]["essid"], psk)
-            else:
-                status("no password for this one")
-                time.sleep(1)
-            d = display.begin()
-            box(d, "CRACKED")
-            render_list(d, labels(), active)
-            display.show()
-        elif ev["type"] == "key1":
-            return
+
+    def _render():
+        d = display.begin()
+        box(d, "CRACKED")
+        render_list(d, labels(), active)
+        display.show()
+
+    _render()
+    set_repaint(_render)
+    try:
+        while True:
+            ev = wait_event()
+            if not ev:
+                continue
+            active = _move(active, len(entries), ev)
+            if ev["type"] in ("up", "down"):
+                _render()
+            elif ev["type"] == "press":
+                psk = entries[active].get("psk")
+                if psk:
+                    config.Runtime.target_essid = entries[active]["essid"]
+                    set_repaint(None)
+                    connect_to_ssid(entries[active]["essid"], psk)
+                    set_repaint(_render)
+                else:
+                    status("no password for this one")
+                    time.sleep(1)
+                _render()
+            elif ev["type"] == "key1":
+                return
+    finally:
+        set_repaint(None)
 
 
 # --------------------------------------------------------------------------
@@ -714,26 +748,32 @@ def connect_menu():
     active = 0
     def labels():
         return [e["essid"] for e in with_psk]
-    d = display.begin()
-    box(d, "CONNECT")
-    render_list(d, labels(), active)
-    display.show()
-    while True:
-        ev = wait_event()
-        if not ev:
-            continue
-        active = _move(active, len(with_psk), ev)
-        if ev["type"] in ("up", "down"):
-            d = display.begin()
-            box(d, "CONNECT")
-            render_list(d, labels(), active)
-            display.show()
-        elif ev["type"] == "press":
-            e = with_psk[active]
-            connect_to_ssid(e["essid"], e["psk"])
-            return
-        elif ev["type"] == "key1":
-            return
+
+    def _render():
+        d = display.begin()
+        box(d, "CONNECT")
+        render_list(d, labels(), active)
+        display.show()
+
+    _render()
+    set_repaint(_render)
+    try:
+        while True:
+            ev = wait_event()
+            if not ev:
+                continue
+            active = _move(active, len(with_psk), ev)
+            if ev["type"] in ("up", "down"):
+                _render()
+            elif ev["type"] == "press":
+                e = with_psk[active]
+                set_repaint(None)
+                connect_to_ssid(e["essid"], e["psk"])
+                return
+            elif ev["type"] == "key1":
+                return
+    finally:
+        set_repaint(None)
 
 
 def connect_to_ssid(ssid, psk):
