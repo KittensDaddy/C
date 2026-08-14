@@ -201,7 +201,12 @@ class AttackStatus:
         elif t == "pmkid":
             self._set(essid, "handshake", "pmkid")
         elif t == "cracked":
-            self._set(essid, "cracked", str(ev.get("psk", "?")))
+            # PSK = the connectable Wi-Fi password; a bare PIN is shown as "PIN …"
+            # so it's clear it isn't the password yet.
+            psk = ev.get("psk")
+            pin = ev.get("pin")
+            cred = psk if psk else ("PIN %s" % pin if pin else "?")
+            self._set(essid, "cracked", str(cred))
         elif t == "failed":
             self._set(essid, "failed", ev.get("detail"))
         elif t == "skipped":

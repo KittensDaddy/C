@@ -667,7 +667,9 @@ def cracked_viewer():
         return
     active = 0
     def labels():
-        return ["%s [%s]" % (e["essid"], e.get("psk") or "no-psk")
+        return ["%s [%s]" % (e["essid"],
+                             e.get("psk") or ("PIN %s" % e["pin"] if e.get("pin")
+                                              else "no-psk"))
                 for e in entries]
     d = display.begin()
     box(d, "CRACKED")
