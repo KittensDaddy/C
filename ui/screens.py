@@ -10,7 +10,6 @@ from ui import theme
 from ui import cat
 from hardware import battery
 from hardware.display import display
-from network import tailscale
 
 
 def font(size=None):
@@ -62,21 +61,16 @@ def status_bar(draw):
 
 
 def header(draw, title, show_ts=True):
-    """FlipHUD top strip: title (left) · battery% + TS dot (right) · thin rule."""
+    """FlipHUD top strip: title (left) · battery% (right) · thin rule."""
     W = config.WIDTH
     tf = font(theme.BODY)
-    limit = W - 44 if show_ts else W - 6      # leave room for battery% + TS
-    while title and draw.textlength(title, font=tf) > limit:
+    while title and draw.textlength(title, font=tf) > W - 26:
         title = title[:-1]
     theme.shadowed(draw, title, (3, 0), tf, color=theme.highlight_color())
-    if show_ts:
-        pct, _ = battery.battery.read()
-        if pct is not None:
-            theme.shadowed(draw, "%d%%" % pct, (W - 38, 2), font(theme.MICRO),
-                           color=theme.dim_color())
-        up = tailscale.status() == "up"
-        draw.text((W - 14, 2), "TS", font=font(theme.MICRO),
-                  fill=theme.accent_color() if up else theme.dim_color())
+    pct, _ = battery.battery.read()
+    if pct is not None:
+        theme.shadowed(draw, "%d%%" % pct, (W - 22, 2), font(theme.MICRO),
+                       color=theme.dim_color())
     theme.hline(draw, 13)
 
 
@@ -289,11 +283,8 @@ class AttackStatus:
                        (3, 1), micro, color=WHITE)
         pct, _ = battery.battery.read()
         if pct is not None:
-            theme.shadowed(d, "%d%%" % pct, (W - 34, 1), micro,
+            theme.shadowed(d, "%d%%" % pct, (W - 24, 1), micro,
                            color=theme.dim_color())
-        ts_up = tailscale.status() == "up"
-        d.text((W - 13, 1), "TS", font=micro,
-               fill=theme.accent_color() if ts_up else theme.dim_color())
         theme.hline(d, 11)
 
         if not self.started:

@@ -2,19 +2,15 @@
 """Tailscale status/connectivity helpers with graceful fallbacks."""
 import subprocess
 import shutil
-import threading
 import time
 
 import config
 
-# `tailscale status` spawns a subprocess that BLOCKS ~2s when the daemon is down
-# (it's on-demand here). Calling that from a render — while holding the display
-# lock — froze the whole UI. So a background thread polls it and status() only
-# ever returns the cached value; it never spawns inline.
+# No longer polled from the render loop (the UI doesn't show TS). Only the
+# user-triggered Connect/Upload/SysCheck flows call this, so a plain TTL cache is
+# fine — `tailscale status` can block ~2s when the daemon is on-demand/down.
 _STATUS_TTL = 10.0
-_status_cache = {"t": 0.0, "v": "no_tailscale"}
-_poller_started = False
-_poller_lock = threading.Lock()
+_status_cache = {"t": 0.0, "v": None}
 
 
 def run(cmd, timeout=20):
@@ -29,31 +25,18 @@ def available():
     return shutil.which("tailscale") is not None
 
 
-def _poll_loop():
-    while True:
-        _status_cache["v"] = _status_uncached()
-        _status_cache["t"] = time.time()
-        time.sleep(_STATUS_TTL)
+def status(max_age=_STATUS_TTL):
+    """Cached status: 'up' | 'down' | 'logged_out' | 'no_tailscale'."""
+    now = time.time()
+    if _status_cache["v"] is not None and now - _status_cache["t"] < max_age:
+        return _status_cache["v"]
+    v = _status_uncached()
+    _status_cache["t"] = now
+    _status_cache["v"] = v
+    return v
 
-
-def start_poller():
-    """Start the background status poller once (idempotent)."""
-    global _poller_started
-    with _poller_lock:
-        if _poller_started:
-            return
-        _poller_started = True
-        threading.Thread(target=_poll_loop, daemon=True).start()
-
-
-def status(max_age=None):
-    """Cached status: 'up' | 'down' | 'logged_out' | 'no_tailscale'. Never
-    blocks — returns the last value the background poller fetched."""
-    start_poller()
-    return _status_cache["v"]
 
 def refresh_status():
-    """Force a synchronous refresh (use off the render path, e.g. after `up`)."""
     _status_cache["v"] = _status_uncached()
     _status_cache["t"] = time.time()
     return _status_cache["v"]
