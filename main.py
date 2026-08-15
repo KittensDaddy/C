@@ -39,8 +39,10 @@ def _restore_settings():
 
 
 def main():
+    _t0 = time.time()
     # Splash on the LCD (if available) even before buttons init
     render_splash()
+    _log("splash rendered %.2fs after app start" % (time.time() - _t0))
 
     buttons = ButtonManager()
     menus.set_button_manager(buttons)
