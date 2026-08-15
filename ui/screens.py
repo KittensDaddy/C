@@ -50,11 +50,14 @@ def status_bar(draw):
     header, so the bottom bar is dropped and the cat roams the full width)."""
     h, W = config.HEIGHT, config.WIDTH
 
-    x0, x1 = 2, W + cat.W
     t = time.time()
-    catx = x0 + int((t * 26) % (x1 - x0))   # ~26 px/s to the right, wraps
+    period = W                              # wrap over exactly one screen width
+    base = (t * 26) % period                # ~26 px/s to the right
     phase = (t * 2.6) % 1.0                 # gait cycles ~2.6 strides/sec
-    cat.draw(draw, catx, h - cat.H, phase, color=(235, 235, 235))
+    # Draw at base AND base-W: as the cat exits the right edge, the same cat
+    # re-enters from the left in the same frame — a seamless loop with no gap.
+    for cx in (base, base - period):
+        cat.draw(draw, int(cx), h - cat.H, phase, color=(235, 235, 235))
 
 
 def header(draw, title, show_ts=True):
