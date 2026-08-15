@@ -28,6 +28,14 @@
 import config
 import time
 
+# numpy makes the RGB565 encode ~15x faster (vectorised vs a per-pixel Python
+# loop) — essential for the 30fps status-bar animation. Optional: a pure-Python
+# fallback runs if numpy is unavailable (slower, no smooth animation).
+try:
+    import numpy as _np
+except ImportError:  # pragma: no cover
+    _np = None
+
 LCD_1IN44 = 1
 LCD_1IN8 = 0
 if LCD_1IN44 == 1:
@@ -308,9 +316,16 @@ class LCD(config.RaspberryPi):
 	@staticmethod
 	def _to_rgb565(im):
 		rgb = im.convert("RGB")
+		if _np is not None:
+			a = _np.asarray(rgb, dtype=_np.uint16)      # (h, w, 3)
+			r, g, b = a[..., 0], a[..., 1], a[..., 2]
+			out = _np.empty((a.shape[0], a.shape[1], 2), dtype=_np.uint8)
+			out[..., 0] = (r & 0xF8) | (g >> 5)
+			out[..., 1] = ((g << 3) & 0xE0) | (b >> 3)
+			return out.tobytes()
+		# Pure-Python fallback (slow — no numpy installed).
 		raw = rgb.tobytes()               # w*h*3
-		n = len(raw) // 3
-		out = bytearray(n * 2)
+		out = bytearray((len(raw) // 3) * 2)
 		j = 0
 		for i in range(0, len(raw), 3):
 			r, g, b = raw[i], raw[i + 1], raw[i + 2]
