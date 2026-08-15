@@ -281,7 +281,10 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                     results["cracked"].append({"essid": r["essid"], "psk": cred})
                     _record_capture(r["essid"], r["bssid"], psk=r.get("psk"),
                                     pin=r.get("pin"), typ="WPS")
-                    continue      # cracked — no need to also grab a handshake
+                    if r.get("psk"):
+                        continue  # got the actual PSK — done with this target
+                    # PIN-only (no PSK): keep the PIN but still try to capture a
+                    # usable handshake below, since a PIN isn't the password.
 
             if "pmkid" in req.attacks and pmkid_mod:
                 r = pmkid_mod.capture(mon, t, req, emit, stop_flag)

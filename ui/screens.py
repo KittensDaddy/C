@@ -46,14 +46,11 @@ def _battery_bars(draw, x, y, pct):
 
 
 def status_bar(draw):
-    """Bottom bar: chunky 3-bar colour battery at left, a cat galloping across
-    the bottom-right."""
+    """Bottom strip: just the galloping cat (battery % lives in the top-right
+    header, so the bottom bar is dropped and the cat roams the full width)."""
     h, W = config.HEIGHT, config.WIDTH
-    pct, _ = battery.battery.read()         # single read per frame
-    _battery_bars(draw, 2, h - 11, pct)
 
-    # Running cat loops across the bottom-right half of the screen.
-    x0, x1 = 60, W + cat.W
+    x0, x1 = 2, W + cat.W
     t = time.time()
     catx = x0 + int((t * 26) % (x1 - x0))   # ~26 px/s to the right, wraps
     phase = (t * 2.6) % 1.0                 # gait cycles ~2.6 strides/sec
