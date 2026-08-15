@@ -256,6 +256,9 @@ setup_tailscale() {
         warn "Run 'sudo tailscale up' to authenticate."
         warn "  Server: 100.124.251.39"
     fi
+    # On-demand: don't start tailscaled at boot (~1.7s faster). The app starts it
+    # when Upload/Connect need it (network/tailscale.py _start_daemon).
+    systemctl disable tailscaled.service >/dev/null 2>&1 && ok "tailscaled on-demand" || true
 }
 
 # ---- [8] project files ----------------------------------------------------

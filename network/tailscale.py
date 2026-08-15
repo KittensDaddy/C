@@ -64,11 +64,26 @@ def ping_server():
     return bool(r and r.returncode == 0)
 
 
+def _start_daemon():
+    """tailscaled is on-demand (disabled at boot to save ~1.7s). Start it when a
+    feature actually needs it. The app runs as root, so systemctl works directly;
+    fall back to sudo if not."""
+    for cmd in (["systemctl", "start", "tailscaled"],
+                ["sudo", "systemctl", "start", "tailscaled"]):
+        r = run(cmd, timeout=15)
+        if r is not None and r.returncode == 0:
+            time.sleep(1)         # let the daemon come up before `tailscale up`
+            return True
+    return False
+
+
 def up(non_interactive=True):
-    """Bring tailscale up (user must already be authed)."""
+    """Bring tailscale up (user must already be authed). Starts the on-demand
+    daemon first."""
     if not available():
         return False
-    if status() == "up":
+    _start_daemon()
+    if refresh_status() == "up":
         return True
     args = ["sudo", "tailscale", "up"]
     if non_interactive:
