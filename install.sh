@@ -219,7 +219,9 @@ setup_service() {
     cat > "$f" <<EOF
 [Unit]
 Description=wifi-box v2
-After=network.target multi-user.target
+# Start as soon as basic.target is up — the LCD menu needs no network (attacks
+# use the external adapter). Waiting on network.target delayed the menu ~9s.
+After=basic.target
 
 [Service]
 Type=simple
