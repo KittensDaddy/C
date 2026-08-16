@@ -263,6 +263,34 @@ EOF
     ok "wifibox.service enabled (auto-start on boot)"
 }
 
+# ---- [6b] usb wedge watchdog ------------------------------------------------
+# The RTL8822BU external adapter's in-kernel driver (rtw88_8822bu) can wedge
+# its USB firmware under sustained monitor-mode/reaver traffic — the chip
+# stops answering register writes and eventually drops off the bus entirely.
+# This watches the kernel log for that failure signature and resets the
+# adapter's USB port at the first sign of it, before it goes fully dead.
+setup_usb_watchdog() {
+    chmod +x "$PROJECT_DIR/attack/usb_watchdog.sh"
+    local f="/etc/systemd/system/wifi-usb-watchdog.service"
+    cat > "$f" <<EOF
+[Unit]
+Description=External wifi adapter USB wedge watchdog
+After=basic.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash $PROJECT_DIR/attack/usb_watchdog.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now wifi-usb-watchdog.service >> "$LOG" 2>&1 || true
+    ok "wifi-usb-watchdog.service enabled (auto-recovers wedged external adapter)"
+}
+
 # ---- [7] tailscale ----------------------------------------------------------
 setup_tailscale() {
     step 7 "Tailscale setup..."
@@ -359,6 +387,7 @@ main() {
     name_internal_wifi
     setup_sudoers
     setup_service
+    setup_usb_watchdog
     setup_tailscale
     setup_project
     verify
