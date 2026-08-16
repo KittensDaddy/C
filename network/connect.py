@@ -104,7 +104,8 @@ def has_internet(timeout=5):
 
 
 def connect(ssid, psk, progress_cb=None, stop_flag=None):
-    """Connect to SSID. Association counts as success; internet is a bonus.
+    """Connect to SSID using ONLY the internal wifi (wl0). Association counts as
+    success; internet is a bonus. The external attack card is never touched.
 
     Forces a clean disconnect first so re-selecting a network actually reconnects
     (nmcli otherwise no-ops if it thinks it's already connected). Returns
@@ -112,48 +113,47 @@ def connect(ssid, psk, progress_cb=None, stop_flag=None):
     if progress_cb:
         progress_cb("Connecting %s..." % ssid)
 
-    internal, external = iface_mod.classify(iface_mod.get_interfaces())
-    candidates = []
-    if internal:
-        candidates.append(("internal", internal[0][0]))
-    candidates += [("external", name) for name, _ in external]
-
-    last_err = "no wifi interface"
-    for label, name in candidates:
-        if not name:
-            continue
+    internal, _external = iface_mod.classify(iface_mod.get_interfaces())
+    if not internal:
         if progress_cb:
-            progress_cb("%s: %s" % (label, name))
-        # External attack card: leave monitor mode + hand it back to NM.
-        if label == "external":
-            try:
-                if iface_mod.is_in_monitor(name):
-                    iface_mod.disable_monitor(name)
-            except Exception:  # noqa: BLE001
-                pass
-            _nm_manage(name, True)
+            progress_cb("no internal wifi")
+        return False, None, "no internal wifi"
 
-        # Force a clean disconnect + drop stale/duplicate profiles so a re-select
-        # truly reconnects with the password we pass (avoids the 802-11 conflict).
-        run(["nmcli", "device", "disconnect", name], timeout=15)
-        _delete_profiles(ssid)
-        time.sleep(0.5)
+    name = internal[0][0]
+    if progress_cb:
+        progress_cb("internal: %s" % name)
 
-        ok, err = _nmcli_connect(name, ssid, psk)
-        if ok is None:
-            ok = _wpa_supplicant_connect(name, ssid, psk)
-            err = "wpa_supplicant"
-        # Success = actually associated to the target (don't require internet).
-        if ok or _associated_ssid(name) == ssid:
-            if progress_cb:
-                progress_cb("connected" if has_internet()
-                            else "connected (no internet)")
-            return True, name, None
-        last_err = err or "failed"
+    # Force a clean disconnect + drop stale/duplicate profiles so a re-select
+    # truly reconnects with the password we pass (avoids the 802-11 conflict).
+    run(["nmcli", "device", "disconnect", name], timeout=15)
+    _delete_profiles(ssid)
+    time.sleep(0.5)
+
+    ok, err = _nmcli_connect(name, ssid, psk)
+    if ok is None:
+        ok = _wpa_supplicant_connect(name, ssid, psk)
+        err = "wpa_supplicant"
+    # Success = actually associated to the target (don't require internet).
+    if ok or _associated_ssid(name) == ssid:
         if progress_cb:
-            progress_cb("%s failed: %s" % (label, last_err[:16]))
+            progress_cb("connected" if has_internet()
+                        else "connected (no internet)")
+        return True, name, None
 
-    return False, None, last_err
+    if progress_cb:
+        progress_cb("failed: %s" % (err or "failed")[:16])
+    return False, name, err or "failed"
+
+
+def restore_network():
+    """Restart NetworkManager so the internal wl0 reconnects to its saved home
+    network — restores SSH after an attack's monitor-mode churn disrupted it."""
+    for cmd in (["systemctl", "restart", "NetworkManager"],
+                ["sudo", "systemctl", "restart", "NetworkManager"]):
+        r = run(cmd, timeout=20)
+        if r is not None and r.returncode == 0:
+            return True
+    return False
 
 
 def current_ssid():

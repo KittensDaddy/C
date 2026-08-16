@@ -311,6 +311,13 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
         iface_mod.disable_monitor(config.Runtime.monitor_iface or iface_name)
         _nm_set_managed(iface_name, True)
         config.Runtime.monitor_iface = None
+        # Restart NM so the internal wl0 reconnects to its home network (restores
+        # SSH — monitor-mode churn on the external card disrupts NM's wl0).
+        try:
+            from network import connect as _net_connect
+            _net_connect.restore_network()
+        except Exception:  # noqa: BLE001
+            pass
 
     return AttackResult(
         ok=not results["cancelled"],
