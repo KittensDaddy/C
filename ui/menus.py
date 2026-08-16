@@ -458,6 +458,7 @@ def run_and_show(preset):
 
     st = AttackStatus("ATTACK")
     st.set_iface(name, drv)
+    st.seed_scan(config.Runtime.last_scan)
     st.render()
     stop = threading.Event()
 
@@ -467,11 +468,19 @@ def run_and_show(preset):
 
     def status_ev(ev):
         st.handle_event(ev)
+        if ev.get("type") in ("attack", "phase"):
+            st._reveal_current()
         st.render()
 
     def stop_check():
         while True:
             e = wait_event(0.3)
+            if e and e["type"] == "up":
+                st.scroll_up()
+                st.render()
+            if e and e["type"] == "down":
+                st.scroll_down()
+                st.render()
             if e and e["type"] == "key1":
                 stop.set()
             if e and e["type"] == "key3":

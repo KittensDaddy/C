@@ -115,23 +115,28 @@ class AttackStatus:
         trophies: cracked (persistent) -> handshakes -> collapsed "- N failed"
     """
 
+    LIST_TOP = 27    # first scan-list row
+    ROW_H = 12       # scan-list row height
+
     def __init__(self, title="ATTACK"):
         self.title = title
         self.target_cur = 0
         self.target_total = 0
         self.cur_essid = ""
+        self.cur_bssid = ""       # currently-attacking BSSID (shown in the header)
         self.cur_phase = ""       # short code straight from the engine: HS/PIXIE/PMKID/DEAUTH/CRACK
         self.cur_countdown = None # int seconds remaining (as of the last event)
         self._cd_at = 0.0         # wall-clock when cur_countdown was set (live tick)
         self.scan_targets = 0     # live count while the engine is still scanning
-        self.scan_found = []      # [{essid,signal}] discovered this scan
+        self.nets = []            # [{key, bssid, essid, signal, status, cred}]
+        self.scroll = 0           # top visible scan-list row
+        self._atk_key = None      # key currently marked "atk"
         self.started = False      # True once the engine emits its first real event
         self.last_msg = ""        # latest boot/message line, shown while starting
         self.cur_signal = None    # current target power (dBm)
         self.cur_clients = None   # associated clients on current target (None = n/a)
         self.target_start = time.time()   # when the current target began
         self.last_deauth = 0.0    # last time a deauth event arrived (for a pulse)
-        self.results = []         # list of [essid, status, cred/reason]
         self.start_time = time.time()
         self._tick = 0            # spinner animation counter
         self._phase_key = None    # (essid, phase) to reset the countdown gauge
@@ -144,17 +149,11 @@ class AttackStatus:
         self.iface = name or ""
         self.driver = driver or ""
 
-    def _header_title(self):
-        """Header shows the live attack interface + driver, not a static label."""
-        name = getattr(config.Runtime, "monitor_iface", None) or self.iface
-        if not name:
-            return self.title
-        return ("%s %s" % (name, self.driver)).strip()[:16]
-
     # -- event intake -----------------------------------------------------
     def handle_event(self, ev):
         t = ev.get("type", "")
         essid = ev.get("essid", "") or ""
+        bssid = ev.get("bssid", "") or ""
         if t == "message":
             # While the engine boots (monitor mode, killing procs) show its output.
             if not self.started and ev.get("text"):
@@ -162,12 +161,17 @@ class AttackStatus:
             return
         self.started = True       # first real event -> the engine is up and scanning
         if t == "scan":
+            # Live-growing scan list: merge each discovery into the row list so
+            # the rows appear as they're found, not all at once at the end.
             self.scan_targets = ev.get("targets", 0)
-            self.scan_found = ev.get("found", []) or []
+            for item in (ev.get("found", []) or []):
+                self._add_scan(item)
             self.cur_essid = ""
+            self.cur_bssid = ""
             self.cur_phase = ""
             self.cur_countdown = None
         elif t == "attack":
+            self.cur_bssid = bssid
             if essid != self.cur_essid:      # moved to a new target -> reset
                 self.target_start = time.time()
                 self.cur_signal = ev.get("signal")
@@ -181,6 +185,8 @@ class AttackStatus:
         elif t == "phase":
             if essid:
                 self.cur_essid = essid
+            if bssid:
+                self.cur_bssid = bssid
             self.cur_phase = ev.get("phase", "") or ""   # already a short code
             self.cur_countdown = ev.get("countdown")
             self._cd_at = time.time()                    # anchor for the live tick
@@ -197,39 +203,58 @@ class AttackStatus:
             self.cur_phase = "CRACK"
             self.cur_countdown = None
         elif t == "handshake":
-            self._set(essid, "handshake")
+            self._set(bssid or essid, "handshake")
         elif t == "pmkid":
-            self._set(essid, "handshake", "pmkid")
+            self._set(bssid or essid, "handshake", "pmkid")
         elif t == "cracked":
             # PSK = the connectable Wi-Fi password; a bare PIN is shown as "PIN …"
             # so it's clear it isn't the password yet.
             psk = ev.get("psk")
             pin = ev.get("pin")
             cred = psk if psk else ("PIN %s" % pin if pin else "?")
-            self._set(essid, "cracked", str(cred))
+            self._set(bssid or essid, "cracked", str(cred))
         elif t == "failed":
-            self._set(essid, "failed", ev.get("detail"))
+            self._set(bssid or essid, "failed", ev.get("detail"))
         elif t == "skipped":
-            self._set(essid, "skipped", ev.get("detail"))
+            self._set(bssid or essid, "skipped", ev.get("detail"))
 
-    def _set(self, essid, status, cred=None):
-        if not essid:
+    def _add_scan(self, item):
+        """Add/merge a discovered network into the scrollable scan list."""
+        essid = item.get("essid") or ""
+        bssid = item.get("bssid") or ""
+        key = bssid or essid
+        if not key:
             return
-        for row in self.results:
-            if row[0] == essid:
+        for row in self.nets:
+            if row["key"] == key:
+                row["essid"] = essid or row["essid"]
+                row["bssid"] = bssid or row["bssid"]
+                if item.get("signal") is not None:
+                    row["signal"] = item["signal"]
+                return
+        self.nets.append({"key": key, "essid": essid, "bssid": bssid,
+                          "signal": item.get("signal"), "status": ""})
+
+    def _set(self, key, status, cred=None):
+        """Apply a result status to the scanned row (or add it if not scanned)."""
+        if not key:
+            return
+        for row in self.nets:
+            if row["key"] == key:
                 # Never let a later "failed" overwrite a real capture.
                 rank = {"failed": 0, "skipped": 0, "handshake": 1, "cracked": 2}
-                if rank.get(status, 0) >= rank.get(row[1], 0):
-                    row[1] = status
+                if rank.get(status, 0) >= rank.get(row.get("status"), 0):
+                    row["status"] = status
                 if cred:
-                    row[2] = cred
+                    row["cred"] = cred
                 return
-        self.results.append([essid, status, cred])
+        self.nets.append({"key": key, "essid": key, "bssid": key,
+                          "signal": None, "status": status, "cred": cred})
 
     def summary(self):
-        c = sum(1 for r in self.results if r[1] == "cracked")
-        h = sum(1 for r in self.results if r[1] == "handshake")
-        f = sum(1 for r in self.results if r[1] in ("failed", "skipped"))
+        c = sum(1 for r in self.nets if r.get("status") == "cracked")
+        h = sum(1 for r in self.nets if r.get("status") == "handshake")
+        f = sum(1 for r in self.nets if r.get("status") in ("failed", "skipped"))
         return c, h, f
 
     def _track_countdown(self, cd_max=None):
@@ -268,10 +293,53 @@ class AttackStatus:
         s = self._live_cd()
         return "" if s is None else "%d:%02d" % (s // 60, s % 60)
 
+    # -- scan list + scrolling --------------------------------------------
+    def seed_scan(self, nets):
+        """Preload the list from a scan already done (Scan & Attack)."""
+        for n in (nets or []):
+            self._add_scan(n)
+
+    def scroll_up(self):
+        self.scroll = max(0, self.scroll - 1)
+
+    def scroll_down(self):
+        self.scroll = min(max(0, len(self.nets) - self._visible_rows()),
+                          self.scroll + 1)
+
+    def _visible_rows(self):
+        return max(1, (config.HEIGHT - 15 - self.LIST_TOP) // self.ROW_H)
+
+    def _reveal_current(self):
+        """Keep the row being attacked on-screen."""
+        key = self.cur_bssid or self.cur_essid
+        if not key:
+            return
+        for i, row in enumerate(self.nets):
+            if row["key"] == key:
+                vis = self._visible_rows()
+                if i < self.scroll:
+                    self.scroll = i
+                elif i >= self.scroll + vis:
+                    self.scroll = i - vis + 1
+                return
+
+    def _row_status(self, row):
+        """(text, color) for the fixed right-hand status of a row."""
+        st = row.get("status", "")
+        if st == "cracked":
+            return "◆", theme.accent_color()
+        if st == "handshake":
+            return "~", theme.highlight_color()
+        if st == "failed":
+            return "·", theme.dim_color()
+        if st == "skipped":
+            return "·", theme.dim_color()
+        return "", theme.dim_color()
+
     def render(self, force=False):
-        """FlipHUD live attack screen: true-black ground, one accent, thin grey
-        elevation rules. Frame-rate capped — the engine emits many events/sec, so
-        intermediate frames drop; state is kept by handle_event."""
+        """Attack screen: state + BSSID header, then a scrollable live list of
+        scanned networks — each name marquees if it overflows, with a fixed
+        status on the right. Battery% sits top-right."""
         now = time.time()
         if not force and now - self._last_paint < 0.1:   # cap full-frame pushes ~10fps
             return
@@ -280,125 +348,101 @@ class AttackStatus:
         d = display.begin()
         W, H = config.WIDTH, config.HEIGHT
         WHITE = theme.text_color()
-        micro, body, hero = font(theme.MICRO), font(theme.BODY), font(theme.HERO)
-        c, h, f = self.summary()
+        micro, body = font(theme.MICRO), font(theme.BODY)
 
-        # --- top status strip: iface (left) · battery% + TS dot (right) ---
-        theme.shadowed(d, self._fit(d, self._header_title(), micro, W - 42),
-                       (3, 1), micro, color=WHITE)
+        # --- top strip: state (left) · battery% (right) ---
+        if not self.started:
+            state = "STARTING"
+        elif self.target_total == 0 and not self.cur_bssid and not self.cur_essid:
+            state = "SCANNING"
+        else:
+            state = "ATTACKING"
+        theme.shadowed(d, state, (3, 1), micro, color=WHITE)
+        if not self.started:
+            theme.shadowed(d, theme.spinner(self._tick), (58, 1), micro,
+                           color=theme.accent_color())
         pct, _ = battery.battery.read()
         if pct is not None:
             theme.shadowed(d, "%d%%" % pct, (W - 24, 1), micro,
                            color=theme.dim_color())
         theme.hline(d, 11)
 
+        # --- second line: current target BSSID (marquee) + countdown ---
+        cd = self._cd_str() if self.started else ""
         if not self.started:
-            theme.shadowed(d, "STARTING %s" % theme.spinner(self._tick),
-                           (3, 22), body, color=WHITE)
-            if self.last_msg:
-                theme.shadowed(d, self._fit(d, self.last_msg, micro, W - 6),
-                               (3, 42), micro, color=theme.accent_color())
-            status_bar(d)
-            display.show()
-            return
-
-        attacking = self.target_total > 0 or bool(self.cur_essid) or bool(self.results)
-
-        # --- counter row: ATK c/t · tick bar · ◆cracked ~hs ---
-        head = "ATK %d/%d" % (self.target_cur, self.target_total) if self.target_total \
-            else ("SCAN" if not attacking else "PREP")
-        theme.shadowed(d, head, (3, 13), micro, color=WHITE)
-        if self.target_total:
-            theme.progress_bar(d, 52, 15, 30, 4,
-                               100 * self.target_cur // max(1, self.target_total))
-        theme.counters(d, W - 40, 13, c, h, micro)
-
-        if not attacking:
-            # Scanning: live discovery list — signal bars + SSID, newest first.
-            theme.shadowed(d, "%s scanning..." % theme.spinner(self._tick),
-                           (3, 28), body, color=theme.accent_color())
-            theme.hline(d, 43)
-            y = 46
-            for item in reversed(self.scan_found[-6:]):
-                if y > H - 15:
-                    break
-                theme.signal_bars(d, 3, y + 1, item.get("signal"))
-                theme.shadowed(d, self._fit(d, item.get("essid") or "?", body,
-                               W - 22), (18, y - 1), body, color=WHITE)
-                y += 12
+            line2 = self.last_msg or ""
+        elif state == "SCANNING":
+            line2 = "scanning... %d" % self.scan_targets
         else:
-            # --- hero: current target + phase pill ---
-            name = self.cur_essid or "..."
-            phase = self.cur_phase
-            pill_w = 0
-            if phase:
-                try:
-                    pill_w = int(d.textlength(phase, font=micro)) + 12
-                except Exception:  # noqa: BLE001
-                    pill_w = len(phase) * 7 + 12
-                theme.pill(d, W - pill_w - 1, 25, phase, micro)
-            hero_w = W - pill_w - 6
+            line2 = self.cur_bssid or self.cur_essid or "..."
+        cdw = 0
+        if cd:
             try:
-                fits = d.textlength(name, font=hero) <= hero_w
+                cdw = int(d.textlength(cd, font=micro)) + 8
             except Exception:  # noqa: BLE001
-                fits = True
-            if fits:
-                theme.shadowed(d, name, (3, 24), hero, color=WHITE)
-            else:
-                theme.marquee(d, 3, 24, name, hero_w, hero, WHITE)
+                cdw = 30
+            theme.shadowed(d, cd, (W - cdw + 4, 13), micro, color=WHITE)
+        lw = W - 6 - cdw
+        if state == "SCANNING" or not self.started:
+            theme.shadowed(d, self._fit(d, line2, body, lw), (3, 13), body,
+                           color=theme.dim_color() if state == "SCANNING"
+                           else theme.accent_color())
+        else:
+            theme.marquee(d, 3, 13, line2, lw, body, WHITE)
+        theme.hline(d, 25)
 
-            # --- HUD line: signal bars · clients · deauth pulse · countdown ---
-            hx = theme.signal_bars(d, 3, 45, self.cur_signal) + 6
-            if self.cur_clients is not None:      # only meaningful for WPA
-                theme.shadowed(d, "%d sta" % self.cur_clients, (hx, 44), micro,
-                               color=WHITE)
-            if time.time() - self.last_deauth < 2.5 and self._tick % 2:
-                theme.shadowed(d, "DEAUTH", (hx + 34, 44), micro,
-                               color=theme.highlight_color())
-            cd = self._cd_str()
-            if cd:
-                theme.shadowed(d, cd, (W - 26, 44), micro, color=WHITE)
-
-            # --- countdown gauge (live) ---
-            secs = self._live_cd()
-            if secs is not None and self._cd_max:
-                pct = int(100 * secs / self._cd_max)
-                theme.progress_bar(d, 3, 56, W - 6, 4, pct,
-                                   color=theme.gauge_color(secs))
-            else:
-                theme.hline(d, 58)
-
-        # --- results log: newest first, colored glyphs ---
-        # Results area: rows start at 65, 12px apart. The animated status-bar
-        # strip owns rows H-14..H (repainted at 30fps), so the last result row
-        # must end above it: 65 + 12*n + 11 (text height) <= H-15.
-        y, bottom = 65, H - 15
-        row_h = 12
-        n_fit = max(1, (bottom - 1 - y - 11) // row_h + 1)
-        glyphs = {"cracked": ("◆", theme.accent_color()),
-                  "handshake": ("~", theme.highlight_color()),
-                  "failed": ("·", theme.dim_color()),
-                  "skipped": ("·", theme.dim_color())}
-        for essid, status, cred in reversed(self.results[-n_fit:]):
-            if y > bottom:
-                break
-            glyph, col = glyphs.get(status, ("·", theme.dim_color()))
-            if status == "cracked" and cred:
-                tail = str(cred)
-            elif status == "handshake":
-                tail = "got hs"
-            else:
-                tail = str(cred or status)
-            d.text((3, y), glyph, font=body, fill=col)
-            theme.shadowed(d, self._fit(d, essid or "?", body, 64),
-                           (13, y), body, color=WHITE)
-            tw = 44
-            theme.shadowed(d, self._fit(d, tail, body, tw), (W - tw - 2, y),
-                           body, color=theme.dim_color())
-            y += 12
+        # --- scrollable scan list ---
+        vis = self._visible_rows()
+        self.scroll = max(0, min(self.scroll, len(self.nets) - vis))
+        if self.nets:
+            n = len(self.nets)
+            if n > vis:
+                track = (H - 15) - self.LIST_TOP
+                thumb = max(8, track * vis // n)
+                ty = self.LIST_TOP + (track - thumb) * self.scroll // max(1, n - vis)
+                d.rectangle((W - 3, self.LIST_TOP, W - 2, H - 15),
+                            fill=theme.rule_color())
+                d.rectangle((W - 4, ty, W - 1, ty + thumb),
+                            fill=theme.accent_color())
+            y = self.LIST_TOP
+            for row in self.nets[self.scroll:self.scroll + vis]:
+                self._render_row(d, y, row, body, micro, W)
+                y += self.ROW_H
+        else:
+            theme.shadowed(d, "no networks yet", (3, 30), body,
+                           color=theme.dim_color())
 
         status_bar(d)
         display.show()
+
+    def _render_row(self, d, y, row, body, micro, W):
+        """One scan-list row: name (marquee) left, fixed status right."""
+        key = row["key"]
+        is_cur = key and (key == self.cur_bssid or key == self.cur_essid)
+        name = row.get("essid") or row.get("bssid") or "?"
+        status, scol = self._row_status(row)
+        if is_cur and not status:
+            status, scol = self.cur_phase or theme.spinner(self._tick), \
+                theme.highlight_color()
+        if status:
+            try:
+                sw = int(d.textlength(status, font=micro)) + 6
+            except Exception:  # noqa: BLE001
+                sw = len(status) * 6 + 6
+        else:
+            sw = 0
+        name_w = W - 6 - sw
+        color = theme.text_color() if is_cur else theme.dim_color()
+        try:
+            fits = d.textlength(name, font=body) <= name_w
+        except Exception:  # noqa: BLE001
+            fits = len(name) * 6 <= name_w
+        if fits:
+            theme.shadowed(d, name, (3, y), body, color=color)
+        else:
+            theme.marquee(d, 3, y, name, name_w, body, color)
+        if status:
+            theme.shadowed(d, status, (W - sw + 3, y), micro, color=scol)
 
 
 def _format_plan(lines, mode, iface, driver):

@@ -156,7 +156,8 @@ def _resolve_targets(iface_name, req, preset, status_cb, stop_flag):
     def _scan_progress(nets):
         if status_cb:
             found = [{"essid": n.get("essid") or n.get("bssid"),
-                      "signal": n.get("signal")} for n in nets[-8:]]
+                      "bssid": n.get("bssid"),
+                      "signal": n.get("signal")} for n in nets]
             status_cb({"type": "scan", "targets": len(nets), "found": found})
 
     nets = sc.scan(iface_name, duration=dur, progress_cb=_scan_progress,
