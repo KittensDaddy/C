@@ -10,10 +10,10 @@ set -euo pipefail
 
 # ---- config ---------------------------------------------------------------
 PROJECT_DIR="/home/sun/C"
-USER="${SUDO_USER:-pi}"
-[ "$USER" = "root" ] && USER="pi"
+USER="${SUDO_USER:-sun}"
+[ "$USER" = "root" ] && USER="sun"
 LOG="/tmp/wifibox-install.log"
-TOTAL_STEPS=9
+TOTAL_STEPS=10
 
 say()  { echo -e "\e[1;34m[wifibox]\e[0m $*"; }
 ok()   { echo -e "\e[1;32m     ✓\e[0m $*"; }
@@ -83,9 +83,26 @@ check_platform() {
     info "Arch:   $(uname -m)"
 }
 
-# ---- [2] hardware ---------------------------------------------------------
+# ---- [2] user account -------------------------------------------------------
+# Passwords are NOT set here on purpose — nothing sensitive belongs in a
+# script that's checked into git. Set them yourself after install:
+#   sudo passwd sun
+#   sudo passwd root
+setup_user() {
+    step 2 "Ensuring 'sun' user exists..."
+    if ! id -u sun >/dev/null 2>&1; then
+        useradd -m -s /bin/bash -G sudo sun
+        info "created user sun"
+    else
+        usermod -aG sudo sun 2>/dev/null || true
+        info "user sun already exists"
+    fi
+    ok "user sun ready — set its password with: sudo passwd sun"
+}
+
+# ---- [3] hardware ---------------------------------------------------------
 enable_hardware() {
-    step 2 "Enabling SPI, I2C, and HAT button pull-ups..."
+    step 3 "Enabling SPI, I2C, and HAT button pull-ups..."
     local conf=""
     for c in /boot/firmware/config.txt /boot/config.txt; do
         [[ -f "$c" ]] && conf="$c" && break
@@ -125,13 +142,13 @@ enable_hardware() {
     fi
 }
 
-# ---- [3] packages ---------------------------------------------------------
+# ---- [4] packages ---------------------------------------------------------
 _pkg_installed() {
     dpkg -s "$1" >/dev/null 2>&1
 }
 
 install_packages() {
-    step 3 "Installing missing system packages..."
+    step 4 "Installing missing system packages..."
 
     local pkgs=(
         python3
@@ -207,9 +224,9 @@ install_packages() {
         || warn "rockyou download failed (on-box crack unavailable; server-crack still works)"
 }
 
-# ---- [4] internal wifi naming ---------------------------------------------
+# ---- [5] internal wifi naming ---------------------------------------------
 name_internal_wifi() {
-    step 4 "Naming internal WiFi -> wl0..."
+    step 5 "Naming internal WiFi -> wl0..."
     local f="/etc/systemd/network/10-wlan_internal.link"
     cat > "$f" <<'EOF'
 [Match]
@@ -223,9 +240,9 @@ EOF
 }
 
 
-# ---- [5] sudoers ----------------------------------------------------------
+# ---- [6] sudoers ----------------------------------------------------------
 setup_sudoers() {
-    step 5 "Configuring passwordless sudo..."
+    step 6 "Configuring passwordless sudo..."
     local f="/etc/sudoers.d/wifibox"
     cat > "$f" <<EOF
 $USER ALL=(ALL) NOPASSWD: /usr/sbin/airmon-ng, /usr/sbin/airodump-ng, /usr/sbin/aireplay-ng, /usr/bin/aircrack-ng, /usr/bin/reaver, /usr/bin/bully, /usr/bin/hcxdumptool, /usr/sbin/iw, /usr/sbin/iwconfig, /usr/bin/nmcli, /usr/sbin/ip, /usr/bin/tailscale
@@ -234,9 +251,9 @@ EOF
     ok "sudoers: $f"
 }
 
-# ---- [6] systemd service --------------------------------------------------
+# ---- [7] systemd service --------------------------------------------------
 setup_service() {
-    step 6 "Installing auto-start service..."
+    step 7 "Installing auto-start service..."
     local f="/etc/systemd/system/wifibox.service"
     cat > "$f" <<EOF
 [Unit]
@@ -263,7 +280,7 @@ EOF
     ok "wifibox.service enabled (auto-start on boot)"
 }
 
-# ---- [6b] usb wedge watchdog ------------------------------------------------
+# ---- [7b] usb wedge watchdog ------------------------------------------------
 # The RTL8822BU external adapter's in-kernel driver (rtw88_8822bu) can wedge
 # its USB firmware under sustained monitor-mode/reaver traffic — the chip
 # stops answering register writes and eventually drops off the bus entirely.
@@ -291,9 +308,9 @@ EOF
     ok "wifi-usb-watchdog.service enabled (auto-recovers wedged external adapter)"
 }
 
-# ---- [7] tailscale ----------------------------------------------------------
+# ---- [8] tailscale ----------------------------------------------------------
 setup_tailscale() {
-    step 7 "Tailscale setup..."
+    step 8 "Tailscale setup..."
     if ! command -v tailscale >/dev/null; then
         warn "tailscale not installed."
         return
@@ -311,9 +328,9 @@ setup_tailscale() {
     systemctl disable tailscaled.service >/dev/null 2>&1 && ok "tailscaled on-demand" || true
 }
 
-# ---- [8] project files ----------------------------------------------------
+# ---- [9] project files ----------------------------------------------------
 setup_project() {
-    step 8 "Setting up project files..."
+    step 9 "Setting up project files..."
     mkdir -p "$PROJECT_DIR"
     if [[ -f "$PROJECT_DIR/main.py" ]]; then
         chown -R "$USER":"$USER" "$PROJECT_DIR" 2>/dev/null || true
@@ -328,9 +345,9 @@ setup_project() {
     fi
 }
 
-# ---- [9] verification ------------------------------------------------------
+# ---- [10] verification ------------------------------------------------------
 verify() {
-    step 9 "Verifying installation..."
+    step 10 "Verifying installation..."
     local pass=0 failc=0
     local check
     declare -A checks=(
@@ -382,6 +399,7 @@ main() {
     echo
 
     check_platform
+    setup_user
     enable_hardware
     install_packages
     name_internal_wifi
@@ -397,11 +415,18 @@ main() {
     echo -e "\e[1;32m  ║      Install complete!           ║\e[0m"
     echo -e "\e[1;32m  ╚══════════════════════════════════╝\e[0m"
     echo
-    read -r -p "  Reboot now to apply SPI/I2C + wl0? [Y/n] " resp
-    case "$resp" in
-        n|N|no) say "Reboot later: sudo reboot" ;;
-        *) reboot ;;
-    esac
+    if [[ -t 0 ]]; then
+        read -r -p "  Reboot now to apply SPI/I2C + wl0? [Y/n] " resp
+        case "$resp" in
+            n|N|no) say "Reboot later: sudo reboot" ;;
+            *) reboot ;;
+        esac
+    else
+        # No TTY on stdin (e.g. run over `ssh host sudo bash install.sh`) — an
+        # unattended reboot here would drop the SSH session with no warning.
+        say "No TTY detected — skipping auto-reboot."
+        say "Run 'sudo reboot' manually to apply SPI/I2C + wl0."
+    fi
 }
 
 main "$@"
