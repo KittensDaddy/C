@@ -126,27 +126,12 @@ enable_hardware() {
 }
 
 # ---- [3] packages ---------------------------------------------------------
+_pkg_installed() {
+    dpkg -s "$1" >/dev/null 2>&1
+}
+
 install_packages() {
-    step 3 "Installing system packages (this takes a few minutes)..."
-    info "apt update..."
-    apt-get update -y >> "$LOG" 2>&1 || warn "apt update had warnings"
-
-    # Add Tailscale repo (Bookworm has it, but ensure latest)
-    if ! dpkg -s tailscale >/dev/null 2>&1; then
-        # Use the running release's codename (bookworm/trixie/...) not a hardcode.
-        local codename="bookworm"
-        [[ -r /etc/os-release ]] && codename=$(. /etc/os-release && \
-            echo "${VERSION_CODENAME:-bookworm}")
-        info "adding Tailscale repo (raspbian/$codename)..."
-        curl -fsSL "https://pkgs.tailscale.com/stable/raspbian/${codename}.noarmor.gpg" \
-            | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null 2>>"$LOG" || true
-        curl -fsSL "https://pkgs.tailscale.com/stable/raspbian/${codename}.tailscale-keyring.list" \
-            | tee /etc/apt/sources.list.d/tailscale.list >/dev/null 2>>"$LOG" || true
-        apt-get update -y >> "$LOG" 2>&1 || true
-    fi
-
-    info "apt upgrade..."
-    apt-get upgrade -y >> "$LOG" 2>&1 || warn "apt upgrade had warnings"
+    step 3 "Installing missing system packages..."
 
     local pkgs=(
         python3
@@ -157,20 +142,58 @@ install_packages() {
         network-manager curl git
         tailscale
     )
-    local total=${#pkgs[@]}
-    local i=0
-    # install in small batches so progress is visible
-    local batch=()
+
+    # Only install what's missing (safe, fast re-run).
+    local missing=()
     for pkg in "${pkgs[@]}"; do
-        batch+=("$pkg")
-        i=$((i + 1))
-        if [[ ${#batch[@]} -ge 4 ]] || [[ $i -eq $total ]]; then
-            printf "\r       [%2d/%2d] installing: %-40s" "$i" "$total" "${batch[*]}"
-            apt-get install -y --no-install-recommends "${batch[@]}" >> "$LOG" 2>&1 || warn "some packages may have failed"
-            batch=()
+        if _pkg_installed "$pkg"; then
+            info "already installed: $pkg"
+        else
+            missing+=("$pkg")
         fi
     done
-    echo
+
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        ok "All ${#pkgs[@]} packages already installed — skipping apt."
+    else
+        info "apt update..."
+        apt-get update -y >> "$LOG" 2>&1 || warn "apt update had warnings"
+
+        # Add Tailscale repo (Bookworm has it, but ensure latest) — only when
+        # tailscale is actually missing.
+        if ! _pkg_installed tailscale; then
+            # Use the running release's codename (bookworm/trixie/...) not a hardcode.
+            local codename="bookworm"
+            [[ -r /etc/os-release ]] && codename=$(. /etc/os-release && \
+                echo "${VERSION_CODENAME:-bookworm}")
+            info "adding Tailscale repo (raspbian/$codename)..."
+            curl -fsSL "https://pkgs.tailscale.com/stable/raspbian/${codename}.noarmor.gpg" \
+                | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null 2>>"$LOG" || true
+            curl -fsSL "https://pkgs.tailscale.com/stable/raspbian/${codename}.tailscale-keyring.list" \
+                | tee /etc/apt/sources.list.d/tailscale.list >/dev/null 2>>"$LOG" || true
+            apt-get update -y >> "$LOG" 2>&1 || true
+        fi
+
+        info "apt upgrade..."
+        apt-get upgrade -y >> "$LOG" 2>&1 || warn "apt upgrade had warnings"
+
+        local total=${#missing[@]}
+        local i=0
+        # install in small batches so progress is visible
+        local batch=()
+        for pkg in "${missing[@]}"; do
+            batch+=("$pkg")
+            i=$((i + 1))
+            if [[ ${#batch[@]} -ge 4 ]] || [[ $i -eq $total ]]; then
+                printf "\r       [%2d/%2d] installing: %-40s" "$i" "$total" "${batch[*]}"
+                apt-get install -y --no-install-recommends "${batch[@]}" >> "$LOG" 2>&1 || warn "some packages may have failed"
+                batch=()
+            fi
+        done
+        echo
+        ok "Installed $total missing package(s) (see $LOG for details)"
+    fi
+
     # rockyou for on-box cracking. Pi OS has no `wordlists` package (that's Kali),
     # so fetch the plaintext copy directly. Optional — server-crack works without it.
     if [[ ! -f /usr/share/wordlists/rockyou.txt ]]; then
@@ -182,7 +205,6 @@ install_packages() {
     fi
     [[ -f /usr/share/wordlists/rockyou.txt ]] && ok "rockyou wordlist ready" \
         || warn "rockyou download failed (on-box crack unavailable; server-crack still works)"
-    ok "All packages processed (see $LOG for details)"
 }
 
 # ---- [4] internal wifi naming ---------------------------------------------
