@@ -3,15 +3,25 @@
 # signature (register-write failures that precede the adapter dropping off
 # the bus entirely) and resets its USB port immediately, before it gets to
 # the fully-unresponsive state where unbind/rebind no longer helps.
-IFACE=wlan0
 LOG=/var/log/wifi-usb-watchdog.log
 LAST_RESET=0
 
+# Find the external adapter by which wireless netdev actually sits on the USB
+# bus (not by interface name — wlan0/wlan1/wl0 depend on udev rename timing,
+# e.g. before the first post-install reboot the internal card can still be
+# "wlan0" and the external one "wlan1"). The internal card is SDIO (mmc), so
+# checking for a "/usb" segment in the resolved device path picks the right
+# one regardless of naming.
 resolve_usbdev() {
-    local devpath
-    devpath=$(readlink -f "/sys/class/net/$IFACE/device" 2>/dev/null)
-    [ -z "$devpath" ] && { echo "1-1"; return; }
-    basename "$(dirname "$devpath")"
+    local net devpath
+    for net in /sys/class/net/*; do
+        [ -e "$net/wireless" ] || continue
+        devpath=$(readlink -f "$net/device" 2>/dev/null)
+        case "$devpath" in
+            */usb*) basename "$(dirname "$devpath")"; return ;;
+        esac
+    done
+    echo "1-1"   # fallback: adapter already dropped off the bus entirely
 }
 
 reset_usb() {
