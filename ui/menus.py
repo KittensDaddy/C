@@ -502,6 +502,13 @@ def run_and_show(preset):
     finally:
         set_repaint(None)
         set_animated(True)      # hand the cat animator back to the menus
+        # stop_check() only exits its loop when stop.is_set() — if the attack
+        # finished on its own (no KEY1/KEY3 cancel), nothing ever set it, and
+        # the thread would leak forever, racing the menu loop for every button
+        # event off the shared queue (intermittently redrawing this stale
+        # attack screen over whatever menu is showing). Force it dead here.
+        stop.set()
+        monitor.join(timeout=1)
 
     # summary
     pv = ProgressView("DONE")
