@@ -309,19 +309,17 @@ class AttackStatus:
     def _visible_rows(self):
         return max(1, (config.HEIGHT - 15 - self.LIST_TOP) // self.ROW_H)
 
-    def _reveal_current(self):
-        """Keep the row being attacked on-screen."""
+    def _ordered_nets(self):
+        """Scan order, but the target being attacked is pinned to the top so the
+        live row is always first in the list."""
         key = self.cur_bssid or self.cur_essid
         if not key:
-            return
-        for i, row in enumerate(self.nets):
-            if row["key"] == key:
-                vis = self._visible_rows()
-                if i < self.scroll:
-                    self.scroll = i
-                elif i >= self.scroll + vis:
-                    self.scroll = i - vis + 1
-                return
+            return self.nets
+        return sorted(self.nets, key=lambda r: 0 if r["key"] == key else 1)
+
+    def _reveal_current(self):
+        """Keep the row being attacked on-screen."""
+        self.scroll = 0
 
     def _row_status(self, row):
         """(text, color) for the fixed right-hand status of a row."""
@@ -393,9 +391,10 @@ class AttackStatus:
 
         # --- scrollable scan list ---
         vis = self._visible_rows()
-        self.scroll = max(0, min(self.scroll, len(self.nets) - vis))
-        if self.nets:
-            n = len(self.nets)
+        ordered = self._ordered_nets()
+        self.scroll = max(0, min(self.scroll, len(ordered) - vis))
+        if ordered:
+            n = len(ordered)
             if n > vis:
                 track = (H - 15) - self.LIST_TOP
                 thumb = max(8, track * vis // n)
@@ -405,7 +404,7 @@ class AttackStatus:
                 d.rectangle((W - 4, ty, W - 1, ty + thumb),
                             fill=theme.accent_color())
             y = self.LIST_TOP
-            for row in self.nets[self.scroll:self.scroll + vis]:
+            for row in ordered[self.scroll:self.scroll + vis]:
                 self._render_row(d, y, row, body, micro, W)
                 y += self.ROW_H
         else:
