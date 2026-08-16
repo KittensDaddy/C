@@ -513,6 +513,8 @@ def run_and_show(preset):
         pv.push("HS  %s (Crack menu)" % h.get("essid"))
     pv.render()
     time.sleep(3)
+    flush_events()   # drop any button mashing during the DONE screen so it
+                      # doesn't leak into the menu we return to
 
 
 # --------------------------------------------------------------------------
