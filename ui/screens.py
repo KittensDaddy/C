@@ -327,13 +327,13 @@ class AttackStatus:
         """(text, color) for the fixed right-hand status of a row."""
         st = row.get("status", "")
         if st == "cracked":
-            return "◆", theme.accent_color()
+            return "KEY", theme.accent_color()
         if st == "handshake":
-            return "~", theme.highlight_color()
+            return "HS", theme.highlight_color()
         if st == "failed":
-            return "·", theme.dim_color()
+            return "x", (255, 70, 70)
         if st == "skipped":
-            return "·", theme.dim_color()
+            return "-", theme.dim_color()
         return "", theme.dim_color()
 
     def render(self, force=False):

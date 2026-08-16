@@ -468,7 +468,7 @@ def run_and_show(preset):
 
     def status_ev(ev):
         st.handle_event(ev)
-        if ev.get("type") in ("attack", "phase"):
+        if ev.get("type") == "attack":
             st._reveal_current()
         st.render()
 
