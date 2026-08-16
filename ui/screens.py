@@ -310,16 +310,24 @@ class AttackStatus:
         return max(1, (config.HEIGHT - 15 - self.LIST_TOP) // self.ROW_H)
 
     def _ordered_nets(self):
-        """Scan order, but the target being attacked is pinned to the top so the
-        live row is always first in the list."""
-        key = self.cur_bssid or self.cur_essid
-        if not key:
-            return self.nets
-        return sorted(self.nets, key=lambda r: 0 if r["key"] == key else 1)
+        """Sort by attack order = strongest signal first (same as the engine's
+        sort_by_signal)."""
+        return sorted(self.nets, key=lambda r: r.get("signal") or 0, reverse=True)
 
     def _reveal_current(self):
-        """Keep the row being attacked on-screen."""
-        self.scroll = 0
+        """Scroll so the row being attacked is on-screen."""
+        key = self.cur_bssid or self.cur_essid
+        if not key:
+            return
+        ordered = self._ordered_nets()
+        for i, row in enumerate(ordered):
+            if row["key"] == key:
+                vis = self._visible_rows()
+                if i < self.scroll:
+                    self.scroll = i
+                elif i >= self.scroll + vis:
+                    self.scroll = i - vis + 1
+                return
 
     def _row_status(self, row):
         """(text, color) for the fixed right-hand status of a row."""
