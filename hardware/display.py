@@ -61,6 +61,11 @@ class Display:
         self._frame_open = False
         self._fb = None          # framebuffer file handle (fbtft mode)
         self.disp = None         # spidev LCD object (fallback mode)
+        # Real framebuffer geometry (the fbtft device is often 128x160 or has a
+        # stride wider than the panel, leaving unwritten edge pixels as garbage).
+        self._fb_w = config.WIDTH
+        self._fb_h = config.HEIGHT
+        self._fb_stride = config.WIDTH * 2
         self._init_hw()
 
     # -- backend selection -------------------------------------------------
@@ -81,9 +86,11 @@ class Display:
         if fbdev:
             try:
                 self._fb = open(fbdev, "r+b", buffering=0)
+                self._read_fb_geometry(fbdev)
                 self.available = True
                 self._quiet_console()
-                self._log("LCD via framebuffer %s (fbtft)" % fbdev)
+                self._log("LCD via framebuffer %s (fbtft) %dx%d stride=%d"
+                          % (fbdev, self._fb_w, self._fb_h, self._fb_stride))
                 return
             except Exception as e:  # noqa: BLE001
                 self._log("framebuffer open failed: %s" % e)
@@ -99,6 +106,26 @@ class Display:
         except Exception as e:  # noqa: BLE001
             self.disp = None
             self._log("no LCD (%s); running headless" % e)
+
+    def _read_fb_geometry(self, fbdev):
+        """Read the framebuffer's real resolution + stride so the 128x128 canvas
+        is blitted into the correct location and leftover pixels are zeroed."""
+        num = fbdev.rstrip("/").rsplit("fb", 1)[-1]
+        base = "/sys/class/graphics/fb%s" % num
+        try:
+            vs = open(base + "/virtual_size").read().strip()
+            w, h = (int(x) for x in vs.split(","))
+            self._fb_w, self._fb_h = w, h
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._fb_stride = int(open(base + "/stride").read().strip())
+        except Exception:  # noqa: BLE001
+            try:
+                bpp = int(open(base + "/bits_per_pixel").read().strip())
+                self._fb_stride = self._fb_w * (bpp // 8)
+            except Exception:  # noqa: BLE001
+                self._fb_stride = self._fb_w * 2
 
     def _quiet_console(self):
         """Stop the fbcon cursor blinking over the UI once we own the fb."""
@@ -139,7 +166,7 @@ class Display:
         if self._fb is not None:
             try:
                 self._fb.seek(0)
-                self._fb.write(_to_fb565(self._canvas))
+                self._fb.write(self._fb565_frame(self._canvas))
             except Exception:  # noqa: BLE001
                 pass
         elif self.disp is not None:
@@ -147,6 +174,22 @@ class Display:
                 self.disp.LCD_ShowImage(self._canvas, 0, 0)
             except Exception:  # noqa: BLE001
                 pass
+
+    def _fb565_frame(self, canvas):
+        """RGB565 for the WHOLE framebuffer (not just the 128x128 canvas) so the
+        panel's right/bottom padding is written as black instead of stale noise."""
+        rgb = _to_fb565(canvas)   # W*H*2 bytes of the visible canvas
+        row = self.width * 2
+        if self._fb_w == self.width and self._fb_h == self.height \
+                and self._fb_stride == row:
+            return rgb
+        # Build a full-size frame: blit the canvas rows at their stride, zero the
+        # rest (offscreen columns/rows the panel still scans out).
+        out = bytearray(self._fb_stride * self._fb_h)
+        for y in range(min(self.height, self._fb_h)):
+            off = y * self._fb_stride
+            out[off:off + row] = rgb[y * row:(y + 1) * row]
+        return bytes(out)
 
     def show(self):
         """Commit the current canvas and release the frame lock."""
@@ -172,7 +215,7 @@ class Display:
             if self._fb is not None:
                 try:
                     self._fb.seek(0)
-                    self._fb.write(_to_fb565(self._canvas))
+                    self._fb.write(self._fb565_frame(self._canvas))
                 except Exception:  # noqa: BLE001
                     pass
             elif self.disp is not None:
@@ -192,7 +235,7 @@ class Display:
         if self._fb is not None:
             try:
                 self._fb.seek(0)
-                self._fb.write(b"\x00" * (self.width * self.height * 2))
+                self._fb.write(b"\x00" * (self._fb_stride * self._fb_h))
             except Exception:  # noqa: BLE001
                 pass
         elif self.disp is not None:
