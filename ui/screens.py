@@ -367,6 +367,9 @@ class AttackStatus:
         if not self.started:
             theme.shadowed(d, theme.spinner(self._tick), (58, 1), micro,
                            color=theme.accent_color())
+        elif state == "ATTACKING" and self.cur_clients is not None:
+            theme.shadowed(d, "C:%d" % self.cur_clients, (58, 1), micro,
+                           color=theme.dim_color())
         pct, _ = battery.battery.read()
         if pct is not None:
             theme.shadowed(d, "%d%%" % pct, (W - 24, 1), micro,

