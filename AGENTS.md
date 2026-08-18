@@ -17,6 +17,12 @@ stdout scraping. **Push last commit → Pi pulls → `sudo systemctl restart wif
 - cracked_store: corrupt-tolerant JSON + upload state tracking + `update_cracked()`
 - install.sh: step counters, spinner, tailscale repo
 - LCD RGB565 encoding is pure-PIL (no numpy)
+- IP-camera module (main menu → "Cameras"): pure-stdlib (socket/urllib/hashlib),
+  no new apt deps. Scans the /24 of the connected iface, fingerprints the dominant
+  Shopee-TH cheap-cam platform (Xiongmai: V380/Yoosee/V360/etc.), then tries
+  unauth access → known-vuln probes → brand-aware default creds (ONVIF digest
+  first, then HTTP digest/basic, then RTSP). Read-only; no RCE/command-injection.
+  Post-login today = JPEG snapshot rendered full-screen on the LCD.
 
 ### To test after pull on Pi
 ```bash
@@ -54,6 +60,10 @@ attack/wpa         airodump+aireplay handshake capture (pcap, no stdout scrape)
 attack/wps         reaver pixie (bully fallback); PIN→PSK recovery
 attack/pmkid       optional hcxdumptool → hcxpcapngtool → .22000
 attack/crack       manual on-box (aircrack/rockyou) or server upload; never auto
+attack/camera      IP-cam engine: subnet→TCP port scan→fingerprint→unauth→vuln→brute→snapshot
+attack/camera_creds  brand-aware default/weak credential table (Xiongmai/Hik/Dahua/…)
+attack/camera_vulns  read-only known-vuln HTTP probes (CVE-2017-7921 etc.)
+camera_store.py    cameras.json persistence (mirrors cracked_store)
 network/connect    nmcli→wpa_supplicant (internal→external), dhcpcd→dhclient→nmcli
 network/tailscale  status, up, ping server
 network/upload     incremental SCP to 100.124.251.39:/home/sun/handshake/

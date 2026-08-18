@@ -16,8 +16,10 @@ from ui.screens import (display, font, status_bar, header, box,
 from hardware import battery
 from attack import interface as iface_mod, scanner as sc, orchestrator
 from attack import crack as crack_mod, tools as atk_tools, wps as wps_mod
+from attack import camera as cam_mod
 from attack.model import EventType
 from cracked_store import load_cracked, load_settings, save_settings, update_cracked
+import camera_store
 from network import connect as net_connect, tailscale, upload as net_upload
 
 _evq = queue.Queue()
@@ -200,7 +202,7 @@ def main_menu():
         d = display.begin()
         box(d, "MAIN")
         labels = ["Scan & Attack", "Quick Attack", "Crack", "Cracked",
-                  "Connect", "Upload", "Config", "SysCheck"]
+                  "Connect", "Upload", "Cameras", "Config", "SysCheck"]
         active = 0
         render_list(d, labels, active)
         display.show()
@@ -237,6 +239,8 @@ def main_menu():
                     connect_menu()
                 elif choice == "Upload":
                     do_upload()
+                elif choice == "Cameras":
+                    cameras_menu()
                 elif choice == "SysCheck":
                     syscheck()
                 d = display.begin()
@@ -933,6 +937,159 @@ def do_upload():
         pv.push("ERR %s" % res.get("error", "failed"))
     pv.render()
     time.sleep(3)
+
+
+# --------------------------------------------------------------------------
+# Cameras — LAN IP-camera discovery + credential/unauth/vuln probing
+# --------------------------------------------------------------------------
+def _snapshot_preview(img, caption, hold=6.0):
+    """Full-screen JPEG preview with a one-line caption strip at the bottom."""
+    d = display.begin()
+    W, H = config.WIDTH, config.HEIGHT
+    d.rectangle((0, 0, W, H), fill=theme.background())
+    if img is not None:
+        display.canvas.paste(img, (0, 0))
+    if caption:
+        d.rectangle((0, H - 14, W, H), fill=theme.background())
+        theme.shadowed(d, caption[:config.MAX_CHARS_PER_LINE], (3, H - 12),
+                       font(theme.MICRO), color=theme.accent_color())
+    display.show()
+    time.sleep(hold)
+
+
+def cameras_menu():
+    info = cam_mod.get_subnet(None)
+    if not info:
+        pv = ProgressView("CAMERAS")
+        pv.push("ERR not connected")
+        pv.render()
+        time.sleep(2)
+        return
+
+    pv = ProgressView("CAMERAS")
+    pv.push("scan %s/24..." % info["ip"].rsplit(".", 1)[0])
+    pv.render()
+
+    stop = threading.Event()
+    state = {"done": False, "cameras": []}
+
+    def cb(*a):
+        if len(a) == 3 and isinstance(a[0], int):
+            pv.push("scan %d/%d f:%d" % a)
+
+    def worker():
+        res = cam_mod.discover(None, stop_flag=stop, progress_cb=cb)
+        state["cameras"] = res.get("cameras", [])
+        state["done"] = True
+
+    threading.Thread(target=worker, daemon=True).start()
+    while not state["done"]:
+        ev = wait_event(0.3)
+        if ev and ev["type"] in ("key1", "key3"):
+            stop.set()
+        pv.render()
+
+    cameras = state["cameras"]
+    if not cameras:
+        pv.push("ERR no cameras found")
+        pv.render()
+        time.sleep(2)
+        return
+
+    active = 0
+
+    def labels():
+        return ["%s [%s]" % (c["ip"], (c.get("brand") or "?")) for c in cameras]
+
+    def _render():
+        d = display.begin()
+        box(d, "CAMERAS")
+        render_list(d, labels(), active)
+        display.show()
+
+    _render()
+    set_repaint(_render)
+    try:
+        while True:
+            ev = wait_event()
+            if not ev:
+                continue
+            active = _move(active, len(cameras), ev)
+            if ev["type"] in ("up", "down"):
+                _render()
+            elif ev["type"] == "press":
+                set_repaint(None)
+                camera_detail(cameras[active])
+                set_repaint(_render)
+                _render()
+            elif ev["type"] == "key1":
+                return
+    finally:
+        set_repaint(None)
+
+
+def camera_detail(fp):
+    ip = fp["ip"]
+    pv = ProgressView("CAM %s" % ip.rsplit(".", 1)[-1])
+    pv.push("probing %s..." % (fp.get("brand") or "?"))
+    pv.render()
+
+    stop = threading.Event()
+    state = {"done": False, "result": None}
+
+    def cb(i, total, cred):
+        pv.push("try %d/%d %s" % (i, total, cred))
+
+    def worker():
+        state["result"] = cam_mod.attack_one(ip, fp, stop_flag=stop,
+                                             progress_cb=cb)
+        state["done"] = True
+
+    threading.Thread(target=worker, daemon=True).start()
+    while not state["done"]:
+        ev = wait_event(0.3)
+        if ev and ev["type"] in ("key1", "key3"):
+            stop.set()
+        pv.render()
+
+    res = state["result"] or {}
+    creds = res.get("creds")
+    access = res.get("access")
+    user = creds.get("user") if creds else None
+    pw = creds.get("pass") if creds else None
+
+    if creds:
+        caption = "%s %s:%s" % (ip, user, pw)
+    elif access:
+        caption = "%s UNAUTH" % ip
+    else:
+        caption = "%s no access" % ip
+
+    snap = cam_mod.fetch_snapshot(ip, fp, creds=(user, pw) if creds else None)
+    img = cam_mod.decode_snapshot(snap["data"]) if snap.get("ok") else None
+
+    camera_store.upsert_camera(
+        ip, brand=fp.get("brand"), model=fp.get("model"),
+        user=user, pw=pw,
+        stream_uri=res.get("stream_uri"),
+        access_kind=(access or {}).get("kind"),
+        snapshot_url=(snap or {}).get("url"))
+
+    if img is not None:
+        flush_events()
+        set_animated(False)
+        _snapshot_preview(img, caption)
+        set_animated(True)
+        flush_events()
+    else:
+        pv.push(("KEY %s=%s" % (user, pw)) if creds else
+                ("UNAUTH %s" % (access or {}).get("kind", "")) if access else
+                "ERR no access")
+        if res.get("stream_uri"):
+            pv.push("RTSP %s" % res["stream_uri"][:19])
+        pv.render()
+        time.sleep(3)
+
 
 
 # --------------------------------------------------------------------------

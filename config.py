@@ -65,6 +65,22 @@ LOG_FILE = PROJECT_DIR + "/wifibox.log"
 CAPTURE_DIR   = DATA_DIR + "/captures"
 WORDLIST_PATH = "/usr/share/wordlists/rockyou.txt"
 
+# ---------------------------------------------------------------------------
+# IP camera module — discovery + credential/unauth/vuln probing (read-only).
+# ---------------------------------------------------------------------------
+CAMERAS_FILE      = DATA_DIR + "/cameras.json"
+CAMERA_CREDS_FILE = DATA_DIR + "/camera_creds.txt"   # optional user drop-in list
+CAMERA_SAVE_DIR   = DATA_DIR + "/cameras"            # snapshots + config dumps
+
+# TCP connect timeout (s) for the port scan; HTTP/RTSP probe timeout (s).
+CAMERA_SCAN_TIMEOUT = 0.6
+CAMERA_HTTP_TIMEOUT = 5
+CAMERA_MAX_THREADS  = 64
+
+# Ports to probe per host: HTTP(S) web, RTSP, ONVIF/ISAPI + common brand ports.
+CAMERA_PORTS = [80, 443, 554, 8000, 8080, 8899, 37777, 34567, 9527, 5000,
+                9000, 10554, 34599, 37778, 10080, 1024]
+
 # Server for uploads (reached over tailscale)
 UPLOAD_SERVER = "100.124.251.39"
 UPLOAD_USER   = "sun"
