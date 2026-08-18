@@ -56,6 +56,7 @@ class Display:
         self.height = config.HEIGHT
         self.available = False
         self._canvas = None
+        self._pending = None
         self._draw = None
         self._lock = threading.RLock()
         self._frame_open = False
@@ -144,12 +145,17 @@ class Display:
 
     # -- canvas helpers ----------------------------------------------------
     def begin(self, bg=None):
+        """Start a frame on a private offscreen buffer — no lock held while the
+        caller draws. `overlay()` (the cat animator) keeps painting the live
+        `self._canvas` freely during this window on its own ~30fps timer
+        instead of losing frames to a multi-millisecond exclusive draw;
+        `show()` swaps the buffer in and pushes it under the lock only for
+        that brief moment."""
         from PIL import Image, ImageDraw
-        self._lock.acquire()
         self._frame_open = True
         bg = bg or palette()["background"]
-        self._canvas = Image.new("RGB", (self.width, self.height), bg)
-        self._draw = ImageDraw.Draw(self._canvas)
+        self._pending = Image.new("RGB", (self.width, self.height), bg)
+        self._draw = ImageDraw.Draw(self._pending)
         return self._draw
 
     @property
@@ -158,7 +164,7 @@ class Display:
 
     @property
     def canvas(self):
-        return self._canvas
+        return self._pending if self._frame_open else self._canvas
 
     def _push_full(self):
         if self._canvas is None:
@@ -192,13 +198,19 @@ class Display:
         return bytes(out)
 
     def show(self):
-        """Commit the current canvas and release the frame lock."""
+        """Swap the finished offscreen buffer in and push it — the only part
+        done under the lock, so it's a memory swap + SPI/fb write, not the
+        whole draw call sequence."""
+        if not self._frame_open:
+            return
+        self._lock.acquire()
         try:
+            self._canvas = self._pending
+            self._pending = None
             self._push_full()
         finally:
-            if self._frame_open:
-                self._frame_open = False
-                self._lock.release()
+            self._frame_open = False
+            self._lock.release()
 
     def overlay(self, paint_fn, region=None):
         """Repaint part of the canvas (status bar/cat) and commit without a new

@@ -202,6 +202,7 @@ def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag, timeout=90,
         return None
     start = time.time()
     psk = None
+    fail_detail = None
     fd = proc.stdout.fileno()
     try:
         while (time.time() - start) < timeout:
@@ -217,10 +218,22 @@ def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag, timeout=90,
             line = proc.stdout.readline()
             if not line:
                 break
+            line = line.strip()
+            if not line:
+                continue
+            tools.log("wps psk-recover: %s" % line)
             m = PSK_RE.search(line)
             if m:
                 psk = m.group(1)
                 break
+            if LOCK_RE.search(line):
+                fail_detail = "wps lock"
+                break
+            if FAIL_RE.search(line):
+                fail_detail = "no psk"
+                break
+        else:
+            fail_detail = fail_detail or "timeout"
     finally:
         try:
             proc.terminate()
@@ -230,4 +243,7 @@ def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag, timeout=90,
                 proc.kill()
             except Exception:  # noqa: BLE001
                 pass
+    if psk is None and fail_detail and not (stop_flag and stop_flag.is_set()):
+        emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
+                         detail=fail_detail))
     return psk
