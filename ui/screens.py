@@ -404,7 +404,7 @@ class AttackStatus:
                 "no beacon": "soft",
                 "no assoc": "soft",
                 "no pixie": "soft",
-                "pin bf": "pinbf",
+                "pin bf": "pixie",
                 "wps off": "off",
                 "timeout": "t/o",
                 "no pin": "nopin",
