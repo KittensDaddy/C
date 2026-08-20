@@ -398,7 +398,17 @@ class AttackStatus:
         if st == "handshake":
             return "HS", theme.highlight_color()
         if st == "failed":
-            return "x", (255, 70, 70)
+            # Show soft-timeout reason when short enough for the LCD.
+            detail = (row.get("cred") or "").strip()
+            short = {
+                "no beacon": "soft",
+                "no assoc": "soft",
+                "timeout": "t/o",
+                "no pin": "nopin",
+                "wps lock": "lock",
+                "no psk": "nopsk",
+            }.get(detail.lower(), "x")
+            return short[:5], (255, 70, 70)
         if st == "skipped":
             return "-", theme.dim_color()
         return "", theme.dim_color()

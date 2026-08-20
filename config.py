@@ -249,10 +249,10 @@ PRESETS = [
      "wpa_time": 180, "scan": 20},
     # WPS pixie-dust — Rush is the aggressive adaptive profile (20s/AP).
     {"name": "PIXIE Rush",
-     "desc": "20s/AP adaptive pixie",
+     "desc": "45s/AP adaptive pixie",
      "attacks": ["wps"],
      "pixie": True,
-     "wps_time": 20,
+     "wps_time": 45,
      "scan": 10,
      "tool": "reaver",
      "ignore_locks": True,

