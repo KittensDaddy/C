@@ -822,7 +822,7 @@ def cracked_detail(entry):
                     set_repaint(None)
                     connect_to_ssid(entry["essid"], entry["psk"],
                                     bssid=entry.get("bssid"))
-                    return
+                    return "main"  # pop cracked detail + list → main menu
                 if a == "Recover PSK":
                     set_repaint(None)
                     psk = _recover_psk_ui(entry)
@@ -873,7 +873,9 @@ def cracked_viewer():
                 _render()
             elif ev["type"] == "press":
                 set_repaint(None)
-                cracked_detail(entries[active])
+                result = cracked_detail(entries[active])
+                if result == "main":
+                    return  # Connect finished → back to main menu
                 set_repaint(_render)
                 _render()
             elif ev["type"] == "key1":
