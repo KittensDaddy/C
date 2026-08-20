@@ -150,7 +150,9 @@ def _filtered(nets, req, preset=None):
             continue
         if req.bands != "both" and _band_of(n.get("channel")) not in (None, req.bands):
             continue
-        if min_sig is not None and (n.get("signal") or -100) < min_sig:
+        # Missing signal must not count as -100 (was wiping whole Rush lists).
+        sig = n.get("signal")
+        if min_sig is not None and sig is not None and sig < min_sig:
             continue
         out.append(n)
     return out
@@ -166,14 +168,23 @@ def _order_targets(nets, req):
 def _resolve_targets(iface_name, req, preset, status_cb, stop_flag):
     """Return a list of target dicts. Uses the multi-select include list when
     present, otherwise scans for `scan` seconds and takes everything found."""
+    from attack import tools as _tools
     scan_map = {config._norm_bssid(n.get("bssid")): n
                 for n in config.Runtime.last_scan}
     if req.target_bssids:
         chosen = [scan_map[b] for b in (
             config._norm_bssid(x) for x in req.target_bssids) if b in scan_map]
-        return [_as_target(n) for n in _order_targets(
-            _filtered(chosen, req, preset), req)]
-    if config.Runtime.target_bssid:      # single picked target
+        kept = _order_targets(_filtered(chosen, req, preset), req)
+        if kept:
+            return [_as_target(n) for n in kept]
+        # Stale selection or filters removed everything — don't die with
+        # "no targets"; fall through to a fresh scan.
+        _tools.log(
+            "targets: selection empty (map=%d chosen=%d) — rescanning"
+            % (len(scan_map), len(chosen)))
+
+    if config.Runtime.target_bssid and not req.target_bssids:
+        # single picked target (only when multi-list is empty)
         one = scan_map.get(config._norm_bssid(config.Runtime.target_bssid), {
             "essid": config.Runtime.target_essid,
             "bssid": config.Runtime.target_bssid,
@@ -197,7 +208,11 @@ def _resolve_targets(iface_name, req, preset, status_cb, stop_flag):
     nets = sc.scan(iface_name, duration=dur, progress_cb=_scan_progress,
                    stop_flag=stop_flag)
     config.Runtime.last_scan = nets
+    raw_n = len(nets)
     nets = _order_targets(_filtered(nets, req, preset), req)
+    _tools.log("targets: scan=%d after_filter=%d band=%s min_sig=%s"
+               % (raw_n, len(nets), req.bands,
+                  config.opt_int(req.filters, "Min Signal", None)))
     cap = config.opt_int(req.filters, "Max Targets", None)
     if cap:
         nets = nets[:cap]
