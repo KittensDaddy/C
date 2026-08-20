@@ -926,6 +926,8 @@ def connect_menu():
 
 
 def connect_to_ssid(ssid, psk, bssid=None):
+    """Join a cracked SSID, show a brief result, then return to the caller
+    (which should pop back to the main menu)."""
     pv = ProgressView("CONNECT")
 
     def _prog(msg):
@@ -936,7 +938,6 @@ def connect_to_ssid(ssid, psk, bssid=None):
                                          bssid=bssid)
     if ok:
         _prog("OK connected: %s" % iface)
-        # bring up tailscale
         if tailscale.up():
             _prog("OK tailscale up")
             _prog("server reachable: %s" %
@@ -945,7 +946,9 @@ def connect_to_ssid(ssid, psk, bssid=None):
             _prog("TS needs auth / down")
     else:
         _prog("ERR %s" % (err or "failed"))
-    time.sleep(3)
+    time.sleep(1.5)
+    flush_events()
+    return ok
 
 
 # --------------------------------------------------------------------------
