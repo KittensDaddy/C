@@ -265,13 +265,20 @@ class AttackStatus:
             if row["key"] == key or (
                     bssid and self._norm_b(row.get("bssid")) == bssid):
                 row["key"] = key if bssid else row["key"]
-                row["essid"] = essid or row["essid"]
+                # Never replace a real ESSID with a MAC-looking fallback.
+                if essid and not self._looks_like_mac(essid):
+                    row["essid"] = essid
+                elif not row.get("essid"):
+                    row["essid"] = essid
                 row["bssid"] = bssid or row["bssid"]
                 if item.get("signal") is not None:
                     row["signal"] = item["signal"]
                 return
-        self.nets.append({"key": key, "essid": essid, "bssid": bssid,
-                          "signal": item.get("signal"), "status": ""})
+        self.nets.append({
+            "key": key,
+            "essid": essid if not self._looks_like_mac(essid) else "",
+            "bssid": bssid,
+            "signal": item.get("signal"), "status": ""})
 
     def _set(self, bssid, essid, status, cred=None):
         """Apply a result status to the scanned row (matched by normalized BSSID)."""
