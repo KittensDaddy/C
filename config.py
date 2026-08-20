@@ -143,11 +143,11 @@ DEFAULT_FILTERS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Hardcoded priority APs — attack by BSSID (ESSID labels are notes only).
+# Hardcoded NEVER-attack APs — skipped by BSSID (and ESSID fallback).
 # Sources: /home/sun/root/handshakes potfile + pcaps, wifi/hs Tofu cap 2026-02.
-# Tofu_5G MAC not in archives — matched by ESSID name when scanned.
+# Tofu_5G MAC not in archives — excluded by ESSID name when scanned.
 # ---------------------------------------------------------------------------
-PRIORITY_TARGETS = [
+EXCLUDED_TARGETS = [
     {"bssid": "64:20:E0:2E:43:93", "essid": "LDGARMENT_2.4G"},
     {"bssid": "64:20:E0:2E:43:97", "essid": "LDGARMENT_5G"},
     {"bssid": "C0:25:2F:F0:F4:BE", "essid": "BABYGIRL"},
@@ -155,9 +155,7 @@ PRIORITY_TARGETS = [
     {"bssid": "7A:53:0D:1B:7E:39", "essid": "Tofu_2.4G"},   # older potfile
 ]
 
-# ESSID names that count as priority even when BSSID isn't in the list yet
-# (e.g. Tofu_5G once it shows up on a scan).
-PRIORITY_ESSIDS = {
+EXCLUDED_ESSIDS = {
     "LDGARMENT_2.4G", "LDGARMENT_5G",
     "BABYGIRL",
     "Tofu_2.4G", "Tofu_5G",
@@ -169,33 +167,16 @@ def _norm_bssid(bssid):
     return (bssid or "").replace("-", ":").upper()
 
 
-def priority_bssids():
-    return {_norm_bssid(t["bssid"]) for t in PRIORITY_TARGETS}
+def excluded_bssids():
+    return {_norm_bssid(t["bssid"]) for t in EXCLUDED_TARGETS}
 
 
-def is_priority_net(net):
-    """True if this scan row is a hardcoded mark (by MAC or ESSID)."""
-    if _norm_bssid(net.get("bssid")) in priority_bssids():
+def is_excluded_net(net):
+    """True if this AP must never be attacked (by MAC or ESSID)."""
+    if _norm_bssid(net.get("bssid")) in excluded_bssids():
         return True
     essid = (net.get("essid") or "").strip()
-    return essid.upper() in {e.upper() for e in PRIORITY_ESSIDS}
-
-
-def enrich_priority(net):
-    """Stamp the known ESSID label onto a matching BSSID (scan may be blank)."""
-    b = _norm_bssid(net.get("bssid"))
-    for t in PRIORITY_TARGETS:
-        if _norm_bssid(t["bssid"]) == b:
-            out = dict(net)
-            out["bssid"] = b
-            if t.get("essid"):
-                out["essid"] = t["essid"]
-            out["priority"] = True
-            return out
-    out = dict(net)
-    if is_priority_net(out):
-        out["priority"] = True
-    return out
+    return essid.upper() in {e.upper() for e in EXCLUDED_ESSIDS}
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +190,6 @@ def enrich_priority(net):
 #   deauth       True/False                   num_deauths / deauth_sec  deauth rounds
 #   tool         "reaver" | "bully"           ignore_locks  True/False
 #   band         "Both" | "2.4" | "5"         max_targets   int | "All"
-#   priority_only  True → only attack PRIORITY_TARGETS / PRIORITY_ESSIDS
 PRESETS = [
     # Clientless — grab a PMKID with no deauth (works without connected clients).
     {"name": "PMKID Snag",       "desc": "Clientless PMKID, no deauth",
@@ -233,18 +213,6 @@ PRESETS = [
      "ignore_locks": True,
      "band": "Both",
      "max_targets": "All"},
-    # Hardcoded marks only (LDGARMENT / BABYGIRL / Tofu) by BSSID.
-    {"name": "Marked APs",
-     "desc": "LDGARMENT/BABYGIRL/Tofu",
-     "attacks": ["wps", "wpa"],
-     "pixie": True,
-     "wps_time": 20,
-     "scan": 10,
-     "tool": "reaver",
-     "ignore_locks": True,
-     "band": "Both",
-     "priority_only": True,
-     "deauth": True},
     {"name": "WPS + WPA",        "desc": "Pixie then handshake",
      "attacks": ["wps", "wpa"], "pixie": True, "wps_time": 60, "deauth": True,
      "scan": 20},

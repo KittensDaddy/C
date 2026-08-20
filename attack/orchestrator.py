@@ -109,10 +109,10 @@ def build_request(iface, preset=None):
 # Target resolution
 # ---------------------------------------------------------------------------
 def _as_target(net):
-    net = config.enrich_priority(net)
-    return {"essid": net.get("essid"), "bssid": config._norm_bssid(net.get("bssid")),
+    return {"essid": net.get("essid"),
+            "bssid": config._norm_bssid(net.get("bssid")) or net.get("bssid"),
             "channel": net.get("channel"), "signal": net.get("signal"),
-            "wps": net.get("wps"), "priority": bool(net.get("priority"))}
+            "wps": net.get("wps")}
 
 
 def _filtered(nets, req, preset=None):
@@ -120,18 +120,17 @@ def _filtered(nets, req, preset=None):
     if config.opt_bool(req.filters, "Ignore Cracked", False):
         cracked_bssids = {e.get("bssid") for e in load_cracked() if e.get("psk")}
     min_sig = config.opt_int(req.filters, "Min Signal", None)
-    priority_only = bool((preset or {}).get("priority_only"))
     out = []
     for n in nets:
-        n = config.enrich_priority(n)
-        b = config._norm_bssid(n.get("bssid"))
+        b = config._norm_bssid(n.get("bssid")) or n.get("bssid")
         if not b:
+            continue
+        # Hardcoded home/friendly APs — never attack (by MAC or ESSID).
+        if config.is_excluded_net(n):
             continue
         if b in req.exclude_bssids or n.get("essid") in req.exclude_essids:
             continue
         if b in cracked_bssids:
-            continue
-        if priority_only and not config.is_priority_net(n):
             continue
         if req.bands != "both" and _band_of(n.get("channel")) not in (None, req.bands):
             continue
@@ -142,13 +141,10 @@ def _filtered(nets, req, preset=None):
 
 
 def _order_targets(nets, req):
-    """Hardcoded priority BSSIDs first, then WPS-known, then strongest signal."""
-    def _key(n):
-        pri = 0 if config.is_priority_net(n) else 1
-        wps = 0 if (n.get("wps") is True and "wps" in req.attacks) else 1
-        sig = -(n.get("signal") or -999)
-        return (pri, wps, sig)
-    return sorted(nets, key=_key)
+    """When WPS is enabled, put known-WPS APs first; never drop unknowns."""
+    if "wps" in req.attacks:
+        return sc.sort_wps_first(nets)
+    return sc.sort_by_signal(nets)
 
 
 def _resolve_targets(iface_name, req, preset, status_cb, stop_flag):
@@ -157,17 +153,8 @@ def _resolve_targets(iface_name, req, preset, status_cb, stop_flag):
     scan_map = {config._norm_bssid(n.get("bssid")): n
                 for n in config.Runtime.last_scan}
     if req.target_bssids:
-        chosen = []
-        for b in req.target_bssids:
-            bn = config._norm_bssid(b)
-            if bn in scan_map:
-                chosen.append(scan_map[bn])
-            elif bn in config.priority_bssids():
-                # Hardcoded mark selected but not in last scan — still queue it.
-                meta = next(t for t in config.PRIORITY_TARGETS
-                            if config._norm_bssid(t["bssid"]) == bn)
-                chosen.append({"bssid": bn, "essid": meta.get("essid"),
-                               "channel": None, "signal": None, "priority": True})
+        chosen = [scan_map[b] for b in (
+            config._norm_bssid(x) for x in req.target_bssids) if b in scan_map]
         return [_as_target(n) for n in _order_targets(
             _filtered(chosen, req, preset), req)]
     if config.Runtime.target_bssid:      # single picked target
@@ -175,8 +162,11 @@ def _resolve_targets(iface_name, req, preset, status_cb, stop_flag):
             "essid": config.Runtime.target_essid,
             "bssid": config.Runtime.target_bssid,
             "channel": config.Runtime.target_channel})
+        # Still honor hardcoded excludes for a manually picked target.
+        if config.is_excluded_net(one):
+            return []
         return [_as_target(one)]
-    # Quick Attack / pillage: scan then take all (or priority_only).
+    # Quick Attack / pillage: scan then take all.
     dur = int((preset or {}).get("scan", config.opt_int(req.timing, "Scan Time", 30)))
     if status_cb:
         status_cb({"type": "message", "text": "scanning %ds..." % dur})
