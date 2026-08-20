@@ -2,6 +2,7 @@
 """Non-menu screens: splash, status bar, attack status, cracked viewer,
 connect/upload progress. These are rendering + view-state helpers.
 """
+import re
 import time
 from PIL import ImageFont
 
@@ -123,7 +124,7 @@ class AttackStatus:
         self.target_cur = 0
         self.target_total = 0
         self.cur_essid = ""
-        self.cur_bssid = ""       # currently-attacking BSSID (shown in the header)
+        self.cur_bssid = ""       # currently-attacking BSSID (normalized)
         self.cur_phase = ""       # short code straight from the engine: HS/PIXIE/PMKID/DEAUTH/CRACK
         self.cur_countdown = None # int seconds remaining (as of the last event)
         self._cd_at = 0.0         # wall-clock when cur_countdown was set (live tick)
@@ -149,11 +150,43 @@ class AttackStatus:
         self.iface = name or ""
         self.driver = driver or ""
 
+    @staticmethod
+    def _norm_b(bssid):
+        return config._norm_bssid(bssid) if bssid else ""
+
+    @classmethod
+    def _row_key(cls, bssid, essid):
+        """Stable list key: always prefer normalized BSSID so status can update."""
+        return cls._norm_b(bssid) or (essid or "")
+
+    def _current_label(self):
+        """ESSID for the header — never prefer raw MAC when we know the name."""
+        essid = (self.cur_essid or "").strip()
+        bssid = self._norm_b(self.cur_bssid)
+        # Engine sometimes sets essid=bssid when the name is missing.
+        if essid and essid.upper() != bssid and not self._looks_like_mac(essid):
+            return essid
+        for row in self.nets:
+            if self._norm_b(row.get("bssid")) == bssid and row.get("essid"):
+                name = row["essid"]
+                if name and not self._looks_like_mac(name):
+                    return name
+        return essid or bssid or "..."
+
+    @staticmethod
+    def _looks_like_mac(s):
+        s = (s or "").strip()
+        if not s:
+            return False
+        # AA:BB:CC:DD:EE:FF or AABBCCDDEEFF
+        return bool(re.match(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$", s) or
+                    re.match(r"^[0-9A-Fa-f]{12}$", s))
+
     # -- event intake -----------------------------------------------------
     def handle_event(self, ev):
         t = ev.get("type", "")
         essid = ev.get("essid", "") or ""
-        bssid = ev.get("bssid", "") or ""
+        bssid = self._norm_b(ev.get("bssid", "") or "")
         if t == "message":
             # While the engine boots (monitor mode, killing procs) show its output.
             if not self.started and ev.get("text"):
@@ -182,6 +215,9 @@ class AttackStatus:
             if ev.get("current") and ev.get("total"):
                 self.target_cur = ev["current"]
                 self.target_total = ev["total"]
+            # Ensure the current target exists as a row keyed by BSSID.
+            self._add_scan({"essid": essid, "bssid": bssid,
+                            "signal": ev.get("signal")})
         elif t == "phase":
             if essid:
                 self.cur_essid = essid
@@ -203,30 +239,32 @@ class AttackStatus:
             self.cur_phase = "CRACK"
             self.cur_countdown = None
         elif t == "handshake":
-            self._set(bssid or essid, "handshake")
+            self._set(bssid, essid, "handshake")
         elif t == "pmkid":
-            self._set(bssid or essid, "handshake", "pmkid")
+            self._set(bssid, essid, "handshake", "pmkid")
         elif t == "cracked":
             # PSK = the connectable Wi-Fi password; a bare PIN is shown as "PIN …"
             # so it's clear it isn't the password yet.
             psk = ev.get("psk")
             pin = ev.get("pin")
             cred = psk if psk else ("PIN %s" % pin if pin else "?")
-            self._set(bssid or essid, "cracked", str(cred))
+            self._set(bssid, essid, "cracked", str(cred))
         elif t == "failed":
-            self._set(bssid or essid, "failed", ev.get("detail"))
+            self._set(bssid, essid, "failed", ev.get("detail"))
         elif t == "skipped":
-            self._set(bssid or essid, "skipped", ev.get("detail"))
+            self._set(bssid, essid, "skipped", ev.get("detail"))
 
     def _add_scan(self, item):
         """Add/merge a discovered network into the scrollable scan list."""
         essid = item.get("essid") or ""
-        bssid = item.get("bssid") or ""
-        key = bssid or essid
+        bssid = self._norm_b(item.get("bssid") or "")
+        key = self._row_key(bssid, essid)
         if not key:
             return
         for row in self.nets:
-            if row["key"] == key:
+            if row["key"] == key or (
+                    bssid and self._norm_b(row.get("bssid")) == bssid):
+                row["key"] = key if bssid else row["key"]
                 row["essid"] = essid or row["essid"]
                 row["bssid"] = bssid or row["bssid"]
                 if item.get("signal") is not None:
@@ -235,20 +273,34 @@ class AttackStatus:
         self.nets.append({"key": key, "essid": essid, "bssid": bssid,
                           "signal": item.get("signal"), "status": ""})
 
-    def _set(self, key, status, cred=None):
-        """Apply a result status to the scanned row (or add it if not scanned)."""
+    def _set(self, bssid, essid, status, cred=None):
+        """Apply a result status to the scanned row (matched by normalized BSSID)."""
+        bssid = self._norm_b(bssid)
+        key = self._row_key(bssid, essid)
         if not key:
             return
         for row in self.nets:
-            if row["key"] == key:
-                # Never let a later "failed" overwrite a real capture.
-                rank = {"failed": 0, "skipped": 0, "handshake": 1, "cracked": 2}
-                if rank.get(status, 0) >= rank.get(row.get("status"), 0):
-                    row["status"] = status
-                if cred:
-                    row["cred"] = cred
-                return
-        self.nets.append({"key": key, "essid": key, "bssid": key,
+            match = (row["key"] == key or
+                     (bssid and self._norm_b(row.get("bssid")) == bssid) or
+                     (essid and row.get("essid") == essid and not bssid))
+            if not match:
+                continue
+            # Never let a later "failed" overwrite a real capture.
+            rank = {"failed": 0, "skipped": 0, "handshake": 1, "cracked": 2}
+            if rank.get(status, 0) >= rank.get(row.get("status"), 0):
+                row["status"] = status
+            if cred:
+                row["cred"] = cred
+            # Keep key stable on BSSID so later events keep hitting this row.
+            if bssid:
+                row["key"] = bssid
+                row["bssid"] = bssid
+            if essid and not self._looks_like_mac(essid):
+                row["essid"] = essid
+            return
+        self.nets.append({"key": key,
+                          "essid": essid if not self._looks_like_mac(essid) else "",
+                          "bssid": bssid or key,
                           "signal": None, "status": status, "cred": cred})
 
     def summary(self):
@@ -316,12 +368,14 @@ class AttackStatus:
 
     def _reveal_current(self):
         """Scroll so the row being attacked is on-screen."""
-        key = self.cur_bssid or self.cur_essid
+        key = self._row_key(self.cur_bssid, self.cur_essid)
         if not key:
             return
         ordered = self._ordered_nets()
         for i, row in enumerate(ordered):
-            if row["key"] == key:
+            if row["key"] == key or (
+                    self.cur_bssid and
+                    self._norm_b(row.get("bssid")) == self._norm_b(self.cur_bssid)):
                 vis = self._visible_rows()
                 if i < self.scroll:
                     self.scroll = i
@@ -383,7 +437,7 @@ class AttackStatus:
         elif state == "SCANNING":
             line2 = "scanning... %d" % self.scan_targets
         else:
-            line2 = self.cur_bssid or self.cur_essid or "..."
+            line2 = self._current_label()
         cdw = 0
         if cd:
             try:
@@ -427,9 +481,18 @@ class AttackStatus:
 
     def _render_row(self, d, y, row, body, micro, W):
         """One scan-list row: name (marquee) left, fixed status right."""
-        key = row["key"]
-        is_cur = key and (key == self.cur_bssid or key == self.cur_essid)
+        cur_key = self._row_key(self.cur_bssid, self.cur_essid)
+        is_cur = bool(
+            cur_key and (
+                row["key"] == cur_key or
+                (self.cur_bssid and
+                 self._norm_b(row.get("bssid")) == self._norm_b(self.cur_bssid)) or
+                (self.cur_essid and row.get("essid") == self.cur_essid and
+                 not self._looks_like_mac(self.cur_essid))))
         name = row.get("essid") or row.get("bssid") or "?"
+        if self._looks_like_mac(name) and row.get("bssid"):
+            # Prefer showing ESSID; if missing, keep BSSID but it's a last resort.
+            name = row.get("essid") or row.get("bssid")
         status, scol = self._row_status(row)
         if is_cur and not status:
             status, scol = self.cur_phase or theme.spinner(self._tick), \
