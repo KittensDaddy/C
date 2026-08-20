@@ -496,19 +496,16 @@ def quick_attack():
 
 
 def run_and_show(preset):
-    iface = iface_mod.ensure_external()
-    if not iface:
-        status("No external wifi")
-        time.sleep(1.0)
-        status("replug USB adapter")
-        time.sleep(1.5)
-        return
-    name = iface_mod.iface_name(iface)
+    # Show the plan immediately — do NOT USB-recover here (that can take ~10s
+    # and feels like the attack already started before CommandPreview).
+    iface = iface_mod.pick_external(iface_mod.get_interfaces())
+    name = iface_mod.iface_name(iface) if iface else "?"
     drv = iface[1] if isinstance(iface, tuple) else ""
 
     # Pre-flight: type out the native attack plan for a recheck. KEY1 aborts,
     # any other press runs immediately; otherwise it auto-advances at 0.5s/line.
-    req = orchestrator.build_request(iface, preset=preset)
+    # build_request tolerates a missing iface for plan text (uses name / "?")
+    req = orchestrator.build_request(iface or ("?", "unknown"), preset=preset)
     n_targets = len(config.Runtime.target_bssids) or None
     lines = orchestrator.plan_lines(req, n_targets if n_targets is not None else 0)
     if lines:
@@ -537,6 +534,21 @@ def run_and_show(preset):
                     return
                 if e and e["type"] in ("press", "key3"):
                     break
+
+    # After confirm: recover USB if needed, then launch.
+    set_animated(True)
+    if not iface:
+        status("usb recover...")
+        iface = iface_mod.ensure_external()
+    if not iface:
+        status("No external wifi")
+        time.sleep(1.0)
+        status("replug USB adapter")
+        time.sleep(1.5)
+        return
+    name = iface_mod.iface_name(iface)
+    drv = iface[1] if isinstance(iface, tuple) else ""
+
     # Keep the 30 fps background animator ON during the attack too: it partial-
     # refreshes only the bottom strip (~3ms), so the cat stays smooth here just
     # like the menus. The ticker below repaints the content area for the countdown.

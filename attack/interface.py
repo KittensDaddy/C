@@ -17,7 +17,16 @@ def run(cmd, timeout=15):
 
 
 def _driver_of(ifname):
-    out = run(["/usr/sbin/ethtool", "-i", ifname])
+    """Prefer sysfs (ms); ethtool can stall several seconds on some USB NICs."""
+    for rel in (
+        "/sys/class/net/%s/device/driver" % ifname,
+        "/sys/class/net/%s/device/driver/module" % ifname,
+    ):
+        try:
+            return os.path.basename(os.readlink(rel))
+        except OSError:
+            pass
+    out = run(["/usr/sbin/ethtool", "-i", ifname], timeout=2)
     if not out:
         return "unknown"
     for line in out.stdout.splitlines():
