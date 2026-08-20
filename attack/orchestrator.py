@@ -399,6 +399,15 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
         except Exception:  # noqa: BLE001
             pass
 
+    from attack import tools as _tools
+    _tools.log(
+        "run-metric cracked=%d hs=%d failed=%d cancelled=%s elapsed=%.1f "
+        "preset=%s"
+        % (len(results["cracked"]), len(results["handshakes"]),
+           len(results["failed"]), results["cancelled"],
+           time.time() - start,
+           (preset or {}).get("name") if preset else "config"))
+
     return AttackResult(
         ok=not results["cancelled"],
         cancelled=results["cancelled"],
