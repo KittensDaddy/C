@@ -207,7 +207,14 @@ def _resolve_targets(iface_name, req, preset, status_cb, stop_flag):
 
     nets = sc.scan(iface_name, duration=dur, progress_cb=_scan_progress,
                    stop_flag=stop_flag)
-    config.Runtime.last_scan = nets
+    if not nets and config.Runtime.last_scan:
+        # Fresh iw scan often times out on a wedged USB stick; reuse last good
+        # Scan & Attack / prior Rush list so we don't die with "no targets".
+        _tools.log("targets: fresh scan empty — reusing last_scan=%d"
+                   % len(config.Runtime.last_scan))
+        nets = list(config.Runtime.last_scan)
+    else:
+        config.Runtime.last_scan = nets
     raw_n = len(nets)
     nets = _order_targets(_filtered(nets, req, preset), req)
     _tools.log("targets: scan=%d after_filter=%d band=%s min_sig=%s"
@@ -418,14 +425,16 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
     getpsk_ok = 0
     tools.log("run-start run_id=%s preset=%s" % (
         run_id, (preset or {}).get("name") if preset else "config"))
-    _nm_set_managed(iface_name, False)
 
     try:
+        # Scan while NM can still drive the card — unmanage AFTER target list.
         targets = _resolve_targets(iface_name, req, preset, status_cb, stop_flag)
         if not targets:
-            return AttackResult(ok=False, error="no targets",
+            return AttackResult(ok=False, error="scan empty",
                                 monitor_iface=iface_name,
                                 elapsed=time.time() - start)
+
+        _nm_set_managed(iface_name, False)
 
         mon = iface_mod.enable_monitor(iface_name)
         if not mon:

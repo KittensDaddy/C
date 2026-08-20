@@ -172,7 +172,8 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
     while _remaining() >= 1.0:
         if stop_flag and stop_flag.is_set():
             break
-        tool_t = max(1.5, min(_remaining(), budget))
+        # Cap iw so a hung USB stick leaves time for iwlist/nmcli fallbacks.
+        tool_t = max(1.5, min(_remaining(), 6.0))
 
         # Try `iw` first (absolute path — systemd PATH lacks /usr/sbin).
         out = run([IW, "dev", iface_name, "scan"], timeout=tool_t)
@@ -182,17 +183,26 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
 
         if not parsed and _remaining() >= 1.5:
             out2 = run([IWLIST, iface_name, "scan"],
-                       timeout=max(1.5, min(_remaining(), budget)))
+                       timeout=max(1.5, min(_remaining(), 6.0)))
             parsed = _parse_iwlist(out2.stdout) if out2 else []
+            if parsed:
+                _log("iwlist fallback: %d nets" % len(parsed))
 
         if not parsed and _remaining() >= 1.0:
             # nmcli fallback — pin to the external iface so it never scans wl0.
             # Often returns a cache quickly when a fresh iw scan timed out.
             out3 = run([NMCLI, "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ",
-                        "dev", "wifi", "list", "ifname", iface_name],
-                       timeout=max(1.0, min(_remaining(), 5)))
+                        "dev", "wifi", "list", "ifname", iface_name, "--rescan",
+                        "yes"],
+                       timeout=max(1.0, min(_remaining(), 8.0)))
+            if not (out3 and out3.returncode == 0 and out3.stdout.strip()):
+                out3 = run([NMCLI, "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ",
+                            "dev", "wifi", "list", "ifname", iface_name],
+                           timeout=max(1.0, min(_remaining(), 5.0)))
             if out3:
                 parsed = _parse_nmcli(out3.stdout)
+                if parsed:
+                    _log("nmcli fallback: %d nets" % len(parsed))
 
         merged = {n["bssid"]: n for n in nets}
         for n in parsed:
