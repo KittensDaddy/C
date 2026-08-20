@@ -73,6 +73,34 @@ def is_in_monitor(ifname):
     return bool(out and "Mode:Monitor" in out.stdout)
 
 
+def lock_channel(mon, channel):
+    """Best-effort fixed-channel lock before TX/RX (reaver/airodump/aireplay)."""
+    if not channel:
+        return False
+    name = iface_name(mon)
+    ch = str(channel)
+    for cmd in (
+        ["iw", "dev", name, "set", "channel", ch],
+        ["/usr/sbin/iw", "dev", name, "set", "channel", ch],
+        ["iwconfig", name, "channel", ch],
+        ["/usr/sbin/iwconfig", name, "channel", ch],
+    ):
+        res = run(cmd, timeout=5)
+        if res is not None and res.returncode == 0:
+            try:
+                with open(config.LOG_FILE, "a") as f:
+                    f.write("[iface] channel lock: %s -> %s\n" % (name, ch))
+            except Exception:  # noqa: BLE001
+                pass
+            return True
+    try:
+        with open(config.LOG_FILE, "a") as f:
+            f.write("[iface] channel lock failed: %s ch=%s\n" % (name, ch))
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
 def enable_monitor(ifname):
     """Return the actual monitor interface name, or None on failure."""
     name = iface_name(ifname)

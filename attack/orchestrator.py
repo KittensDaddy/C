@@ -110,7 +110,8 @@ def build_request(iface, preset=None):
 # ---------------------------------------------------------------------------
 def _as_target(net):
     return {"essid": net.get("essid"), "bssid": net.get("bssid"),
-            "channel": net.get("channel"), "signal": net.get("signal")}
+            "channel": net.get("channel"), "signal": net.get("signal"),
+            "wps": net.get("wps")}
 
 
 def _filtered(nets, req):
@@ -135,13 +136,20 @@ def _filtered(nets, req):
     return out
 
 
+def _order_targets(nets, req):
+    """When WPS is enabled, put known-WPS APs first; never drop unknowns."""
+    if "wps" in req.attacks:
+        return sc.sort_wps_first(nets)
+    return sc.sort_by_signal(nets)
+
+
 def _resolve_targets(iface_name, req, preset, status_cb, stop_flag):
     """Return a list of target dicts. Uses the multi-select include list when
     present, otherwise scans for `scan` seconds and takes everything found."""
     scan_map = {n.get("bssid"): n for n in config.Runtime.last_scan}
     if req.target_bssids:
         chosen = [scan_map[b] for b in req.target_bssids if b in scan_map]
-        return [_as_target(n) for n in _filtered(chosen, req)]
+        return [_as_target(n) for n in _order_targets(_filtered(chosen, req), req)]
     if config.Runtime.target_bssid:      # single picked target
         one = scan_map.get(config.Runtime.target_bssid, {
             "essid": config.Runtime.target_essid,
@@ -163,7 +171,7 @@ def _resolve_targets(iface_name, req, preset, status_cb, stop_flag):
     nets = sc.scan(iface_name, duration=dur, progress_cb=_scan_progress,
                    stop_flag=stop_flag)
     config.Runtime.last_scan = nets
-    nets = sc.sort_by_signal(_filtered(nets, req))
+    nets = _order_targets(_filtered(nets, req), req)
     cap = config.opt_int(req.filters, "Max Targets", None)
     if cap:
         nets = nets[:cap]

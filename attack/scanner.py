@@ -75,7 +75,8 @@ def _parse_iw(stdout):
                 nets.append(cur)
             m = re.search(r"BSS (([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})", line)
             cur = {"bssid": m.group(1) if m else None,
-                   "essid": None, "signal": None, "channel": None, "enc": None}
+                   "essid": None, "signal": None, "channel": None,
+                   "enc": None, "wps": None}
         elif cur is not None:
             m = re.search(r"signal:\s*([-0-9]+)", line)
             if m:
@@ -91,6 +92,9 @@ def _parse_iw(stdout):
                 m = re.search(r"freq:\s*(\d+)", line)
                 if m:
                     cur["channel"] = _freq_to_channel(m.group(1))
+            # WPS IE present → prefer these for pixie (unknown stays None).
+            if re.search(r"\bWPS:\b|Wi-?Fi Protected Setup", line, re.I):
+                cur["wps"] = True
             if "WPA" in line:
                 cur["enc"] = "WPA"
             elif "WEP" in line:
@@ -114,7 +118,8 @@ def _parse_iwlist(stdout):
             m = re.search(r"Address:\s*(([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})",
                           line)
             cur = {"bssid": m.group(1) if m else None,
-                   "essid": None, "signal": None, "channel": None, "enc": None}
+                   "essid": None, "signal": None, "channel": None,
+                   "enc": None, "wps": None}
         elif cur is not None:
             m = re.search(r'ESSID:\s*"(.*)"', line)
             if m:
@@ -232,3 +237,12 @@ def _is_hex_byte(s):
 
 def sort_by_signal(nets):
     return sorted(nets, key=lambda n: n.get("signal") or 0, reverse=True)
+
+
+def sort_wps_first(nets):
+    """Known-WPS APs first (potentials), then by signal. Unknowns kept."""
+    return sorted(
+        nets,
+        key=lambda n: (0 if n.get("wps") is True else 1,
+                       -(n.get("signal") or -999)),
+    )

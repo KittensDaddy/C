@@ -10,6 +10,7 @@ import subprocess
 import time
 
 import config
+from attack import interface as iface_mod
 from attack import tools
 from attack.model import AttackEvent, EventType
 
@@ -61,23 +62,6 @@ def _ap_channel(csv_path, bssid):
             except (ValueError, TypeError):
                 pass
     return None
-
-
-def _lock_channel(mon, channel):
-    """Best-effort fixed-channel lock before TX/RX."""
-    if not channel:
-        return
-    iw = tools.which("iw", "/usr/sbin/iw", "/sbin/iw")
-    iwconfig = tools.which("iwconfig", "/usr/sbin/iwconfig", "/sbin/iwconfig")
-    for cmd in (
-        [iw, "dev", mon, "set", "channel", str(channel)],
-        [iwconfig, mon, "channel", str(channel)],
-    ):
-        res = tools.run(cmd, timeout=5)
-        if res is not None and res.returncode == 0:
-            tools.log("channel lock: %s -> %s" % (mon, channel))
-            return
-    tools.log("channel lock failed: %s ch=%s" % (mon, channel))
 
 
 def _start_airodump(mon, bssid, prefix, channel):
@@ -199,7 +183,7 @@ def capture(mon, target, req, emit, stop_flag):
                                  detail="no channel"))
                 return {"ok": False, "essid": essid, "bssid": bssid}
 
-        _lock_channel(mon, channel)
+        iface_mod.lock_channel(mon, channel)
         try:
             dump = _start_airodump(mon, bssid, prefix, channel)
         except Exception as e:  # noqa: BLE001
