@@ -138,8 +138,16 @@ def _parse_iwlist(stdout):
 
 
 def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
-    """Scan for networks. Returns list of net dicts."""
+    """Scan for networks. Returns list of net dicts.
+
+    `duration` is a wall-clock budget (seconds). Each tool invocation is capped
+    to the time remaining so a single `iw scan` cannot blow past the preset
+    (e.g. PIXIE Rush scan=10).
+    """
     iface_name = iface_mod.iface_name(ifname)
+    budget = float(duration if duration is not None else 8)
+    end = time.time() + budget
+
     # A prior attack can leave the external adapter in monitor mode (ifconfig
     # shows PROMISC + an UNSPEC hwaddr), where a normal scan returns nothing.
     # Force it back to managed + up unconditionally before scanning.
@@ -147,30 +155,42 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
         iface_mod.disable_monitor(iface_name)
     except Exception:  # noqa: BLE001
         pass
-    run([IP, "link", "set", iface_name, "down"])
-    run([IW, "dev", iface_name, "set", "type", "managed"])
-    run([IP, "link", "set", iface_name, "up"])
-    time.sleep(0.5)     # let the mode switch settle before scanning
-    _log("scanning on %s (iw=%s), forced managed" % (iface_name, IW))
+    run([IP, "link", "set", iface_name, "down"], timeout=3)
+    run([IW, "dev", iface_name, "set", "type", "managed"], timeout=3)
+    run([IP, "link", "set", iface_name, "up"], timeout=3)
+    # Settle eats into the budget; keep it short on rush scans.
+    settle = min(0.4, max(0.0, end - time.time() - 1.0))
+    if settle > 0:
+        time.sleep(settle)
+    _log("scanning on %s (iw=%s), budget=%.1fs" % (iface_name, IW, budget))
 
     nets = []
-    end = time.time() + (duration or 8)
 
-    while time.time() < end:
+    def _remaining():
+        return max(0.0, end - time.time())
+
+    while _remaining() >= 1.0:
         if stop_flag and stop_flag.is_set():
             break
+        tool_t = max(1.5, min(_remaining(), budget))
+
         # Try `iw` first (absolute path — systemd PATH lacks /usr/sbin).
-        out = run([IW, "dev", iface_name, "scan"])
+        out = run([IW, "dev", iface_name, "scan"], timeout=tool_t)
         if out is not None and out.returncode != 0:
             _log("iw rc=%s err=%s" % (out.returncode, (out.stderr or "")[:80]))
         parsed = _parse_iw(out.stdout) if out and out.returncode == 0 else []
-        if not parsed:
-            out2 = run([IWLIST, iface_name, "scan"])
+
+        if not parsed and _remaining() >= 1.5:
+            out2 = run([IWLIST, iface_name, "scan"],
+                       timeout=max(1.5, min(_remaining(), budget)))
             parsed = _parse_iwlist(out2.stdout) if out2 else []
-        if not parsed:
+
+        if not parsed and _remaining() >= 1.0:
             # nmcli fallback — pin to the external iface so it never scans wl0.
+            # Often returns a cache quickly when a fresh iw scan timed out.
             out3 = run([NMCLI, "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ",
-                        "dev", "wifi", "list", "ifname", iface_name])
+                        "dev", "wifi", "list", "ifname", iface_name],
+                       timeout=max(1.0, min(_remaining(), 5)))
             if out3:
                 parsed = _parse_nmcli(out3.stdout)
 
@@ -186,9 +206,13 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
         # as a pass finds something instead of spinning the whole duration.
         if nets:
             break
-        time.sleep(0.8)     # nothing yet — brief pause, then retry the fallbacks
+        pause = min(0.4, _remaining())
+        if pause < 0.2:
+            break
+        time.sleep(pause)     # nothing yet — brief pause, then retry
 
-    _log("scan done: %d nets" % len(nets))
+    _log("scan done: %d nets (elapsed=%.1fs)" % (
+        len(nets), budget - _remaining()))
 
     # de-dup by bssid one final time
     seen = {}
