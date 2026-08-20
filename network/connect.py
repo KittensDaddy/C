@@ -118,9 +118,21 @@ def _delete_profiles(ssid):
             _log("deleted profile %s" % name)
 
 
+def _device_unmanaged(ifname):
+    r = run(["nmcli", "-t", "-f", "GENERAL.STATE", "device", "show", ifname],
+            timeout=5)
+    if not r:
+        return False
+    return "unmanaged" in (r.stdout or "").lower()
+
+
 def _nm_manage(ifname, managed=True):
     run(["nmcli", "device", "set", ifname, "managed",
          "yes" if managed else "no"], timeout=8)
+    # "strictly unmanaged" (conf.d / udev) ignores a single set — poke twice.
+    if managed:
+        time.sleep(0.3)
+        run(["nmcli", "device", "set", ifname, "managed", "yes"], timeout=8)
 
 
 def _ensure_ready(ifname):
@@ -132,11 +144,15 @@ def _ensure_ready(ifname):
         pass
     run(["rfkill", "unblock", "wifi"], timeout=5)
     run(["nmcli", "radio", "wifi", "on"], timeout=5)
-    _nm_manage(ifname, True)
-    run(["ip", "link", "set", ifname, "up"], timeout=5)
-    # Wait until NM sees the device as usable.
-    run(["nmcli", "device", "wait", ifname], timeout=12)
+    for _ in range(4):
+        _nm_manage(ifname, True)
+        run(["ip", "link", "set", ifname, "up"], timeout=5)
+        if not _device_unmanaged(ifname):
+            break
+        time.sleep(0.6)
     run(["nmcli", "device", "reapply", ifname], timeout=8)
+    if _device_unmanaged(ifname):
+        _log("WARNING: %s still unmanaged after ensure_ready" % ifname)
 
 
 def _wifi_rescan(ifname, wait=4.0):
@@ -212,10 +228,10 @@ def _associated_ssid(ifname):
 
 def _wpa_supplicant_connect(ifname, ssid, psk, bssid=None):
     """Last-resort join with NM hands off the interface."""
+    ok = False
     try:
         _nm_manage(ifname, False)
         time.sleep(0.5)
-        # Kill any stray wpa_supplicant we previously spawned on this iface.
         run(["pkill", "-f", "wpa_supplicant.*-i %s" % ifname], timeout=5)
         time.sleep(0.3)
         conf = "/tmp/wpa_%s.conf" % ifname
@@ -245,8 +261,14 @@ def _wpa_supplicant_connect(ifname, ssid, psk, bssid=None):
         _log("wpa_supplicant err: %s" % e)
         return False
     finally:
-        # Hand back to NM so later Connect / home wifi still works.
-        _nm_manage(ifname, True)
+        # If we joined, install an NM profile BEFORE re-managing so NM does
+        # not yank the link and leave the Pi with no network.
+        if ok:
+            run(["pkill", "-f", "wpa_supplicant.*-i %s" % ifname], timeout=5)
+            _nm_manage(ifname, True)
+            _profile_connect(ifname, ssid, psk, bssid=bssid)
+        else:
+            _nm_manage(ifname, True)
 
 
 def _obtain_lease(ifname):
@@ -446,6 +468,7 @@ def connect(ssid, psk, progress_cb=None, stop_flag=None, bssid=None):
                 return _fail_restore("cancelled")
             if progress_cb:
                 progress_cb(label)
+            _ensure_ready(name)
             _wifi_rescan(name, wait=2.5)
             ok, err = _profile_connect(name, ssid, psk, bssid=pin)
             if ok is None:
