@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Connect to a known WiFi network.
+"""Connect to a known WiFi network via the internal card only.
 
-Uses the internal card (brcmfmac / wl0) only — the external attack adapter is
-never touched.
+On the Pi, nmcli `wifi connect` / profile-up routinely fail after attacks
+(scan cache empty, wlan0 strictly unmanaged). Direct wpa_supplicant is what
+actually associates — so that is the primary path. One short nmcli attempt
+runs first; on any miss we go straight to wpa (no long retry ladder).
 
-Join order (activation failures are common when a stale/wrong BSSID is pinned):
-  1. nmcli wifi connect by SSID only
-  2. same with BSSID (if cracked.json has one)
-  3. named profile up (no BSSID lock, permanent MAC)
-  4. profile up pinned to BSSID
-  5. wpa_supplicant with NM unmanaged
+Disconnect home first so the switch is real; on failure, restore the prior
+NM profile so SSH on the LAN survives.
 """
+import os
 import re
 import subprocess
 import time
@@ -42,7 +41,6 @@ def _nm_output(r):
 
 
 def _short_err(err):
-    """Map verbose nmcli text to something that fits the 128px LCD."""
     e = (err or "").strip()
     low = e.lower()
     if "no network with ssid" in low or "network not found" in low \
@@ -54,9 +52,9 @@ def _short_err(err):
         return "bad password"
     if "no suitable device" in low:
         return "no device"
-    if "device not ready" in low:
+    if "device not ready" in low or "unmanaged" in low:
         return "dev not ready"
-    if "association took too long" in low or "assoc" in low and "fail" in low:
+    if "association took too long" in low:
         return "assoc timeout"
     if "activation failed" in low or "connection activation" in low:
         return "join failed"
@@ -64,6 +62,8 @@ def _short_err(err):
         return "no internal wifi"
     if "timeout" in low:
         return "timeout"
+    if "wpa" in low and "fail" in low:
+        return "wpa failed"
     line = e.splitlines()[-1] if e else "failed"
     line = re.sub(r"^Error:\s*", "", line, flags=re.I)
     line = re.sub(r"^Connection activation failed:\s*", "", line, flags=re.I)
@@ -79,64 +79,25 @@ def _norm_bssid(bssid):
     return ":".join(raw[i:i + 2] for i in range(0, 12, 2)).upper()
 
 
-def _nmcli_connect(ifname, ssid, psk, bssid=None):
-    """Return (ok, error_text). ok is None if nmcli is unavailable."""
-    args = ["nmcli", "--wait", "45", "dev", "wifi", "connect", ssid]
-    if psk:
-        args += ["password", psk]
-    if ifname:
-        args += ["ifname", ifname]
-    if bssid:
-        args += ["bssid", bssid]
-    _log("wifi connect: %s" % " ".join(
-        a if a != psk else "***" for a in args))
-    r = run(args, timeout=60)
-    if r is None:
-        return None, "nmcli unavailable"
-    out = _nm_output(r)
-    _log("wifi connect rc=%s: %s" % (r.returncode, out[:200]))
-    lines = out.splitlines()
-    return (r.returncode == 0), (lines[-1] if lines else "")
-
-
-def _delete_profiles(ssid):
-    """Remove existing NM connection profiles for this SSID (incl. leftover
-    netplan-* duplicates)."""
-    r = run(["nmcli", "-t", "-f", "NAME,UUID", "con", "show"], timeout=8)
-    if not r:
-        return
-    for line in r.stdout.splitlines():
-        parts = line.split(":")
-        if len(parts) < 2:
-            continue
-        # NAME may contain escaped colons; UUID is last field.
-        uuid = parts[-1].strip()
-        name = ":".join(parts[:-1]).replace("\\:", ":").strip()
-        if name and (name == ssid or name.endswith("-" + ssid) or
-                     name.startswith(ssid + "-")):
-            run(["nmcli", "con", "delete", uuid or name], timeout=10)
-            _log("deleted profile %s" % name)
-
-
-def _device_unmanaged(ifname):
-    r = run(["nmcli", "-t", "-f", "GENERAL.STATE", "device", "show", ifname],
-            timeout=5)
-    if not r:
-        return False
-    return "unmanaged" in (r.stdout or "").lower()
+def _escape_wpa(s):
+    return (s or "").replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _nm_manage(ifname, managed=True):
     run(["nmcli", "device", "set", ifname, "managed",
          "yes" if managed else "no"], timeout=8)
-    # "strictly unmanaged" (conf.d / udev) ignores a single set — poke twice.
     if managed:
-        time.sleep(0.3)
+        time.sleep(0.2)
         run(["nmcli", "device", "set", ifname, "managed", "yes"], timeout=8)
 
 
+def _device_unmanaged(ifname):
+    r = run(["nmcli", "-t", "-f", "GENERAL.STATE", "device", "show", ifname],
+            timeout=5)
+    return bool(r and "unmanaged" in (r.stdout or "").lower())
+
+
 def _ensure_ready(ifname):
-    """Make sure the internal NIC is managed, not in monitor, and up."""
     try:
         if iface_mod.is_in_monitor(ifname):
             iface_mod.disable_monitor(ifname)
@@ -144,73 +105,76 @@ def _ensure_ready(ifname):
         pass
     run(["rfkill", "unblock", "wifi"], timeout=5)
     run(["nmcli", "radio", "wifi", "on"], timeout=5)
-    for _ in range(4):
+    for _ in range(3):
         _nm_manage(ifname, True)
         run(["ip", "link", "set", ifname, "up"], timeout=5)
         if not _device_unmanaged(ifname):
             break
-        time.sleep(0.6)
-    run(["nmcli", "device", "reapply", ifname], timeout=8)
-    if _device_unmanaged(ifname):
-        _log("WARNING: %s still unmanaged after ensure_ready" % ifname)
+        time.sleep(0.4)
 
 
-def _wifi_rescan(ifname, wait=4.0):
-    """Force a scan; wait for results to land in NM's cache."""
-    run(["nmcli", "device", "wifi", "rescan", "ifname", ifname], timeout=20)
-    run(["iw", "dev", ifname, "scan", "trigger"], timeout=8)
-    time.sleep(wait)
+def _delete_target_profiles(ssid):
+    """Delete only profiles for the cracked target — never home."""
+    r = run(["nmcli", "-t", "-f", "NAME,UUID", "con", "show"], timeout=8)
+    if not r:
+        return
+    tag = _con_name(ssid)
+    for line in r.stdout.splitlines():
+        parts = line.split(":")
+        if len(parts) < 2:
+            continue
+        uuid = parts[-1].strip()
+        name = ":".join(parts[:-1]).replace("\\:", ":").strip()
+        if not name:
+            continue
+        if name == ssid or name == tag or name.endswith("-" + ssid) \
+                or name.startswith(ssid + "-"):
+            run(["nmcli", "con", "delete", uuid or name], timeout=10)
+            _log("deleted profile %s" % name)
 
 
-def _profile_connect(ifname, ssid, psk, bssid=None):
-    """Create a wifi profile and bring it up."""
-    _delete_profiles(ssid)
-    # Unique con-name avoids clashing with leftover UUID-named profiles.
-    con = "wifibox-%s" % re.sub(r"[^A-Za-z0-9_-]", "_", ssid)[:24]
+def _con_name(ssid):
+    return "wifibox-%s" % re.sub(r"[^A-Za-z0-9_-]", "_", ssid)[:24]
+
+
+def _install_nm_profile(ifname, ssid, psk, bssid=None):
+    """Write an NM profile for a link we already hold (or will bring up)."""
+    con = _con_name(ssid)
+    _delete_target_profiles(ssid)
     add = [
         "nmcli", "connection", "add",
-        "type", "wifi",
-        "con-name", con,
-        "ifname", ifname,
-        "ssid", ssid,
-        "connection.autoconnect", "yes",
+        "type", "wifi", "con-name", con, "ifname", ifname, "ssid", ssid,
+        "connection.autoconnect", "no",
         "wifi.mode", "infrastructure",
         "wifi.mac-address-randomization", "never",
         "wifi.cloned-mac-address", "permanent",
-        "ipv4.method", "auto",
-        "ipv6.method", "auto",
+        "ipv4.method", "auto", "ipv6.method", "ignore",
     ]
     if bssid:
         add += ["wifi.bssid", bssid]
     if psk:
-        add += [
-            "wifi-sec.key-mgmt", "wpa-psk",
-            "wifi-sec.psk", psk,
-            "wifi-sec.auth-alg", "open",
-        ]
-    _log("profile add: %s bssid=%s" % (con, bssid or "-"))
+        add += ["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", psk]
     r = run(add, timeout=15)
-    if r is None:
-        return None, "nmcli unavailable"
-    if r.returncode != 0:
-        out = _nm_output(r)
-        _log("profile add fail: %s" % out[:200])
-        return False, out.splitlines()[-1] if out else "add failed"
+    if not r or r.returncode != 0:
+        _log("install profile fail: %s" % _nm_output(r)[:160])
+        return None
+    return con
 
-    up = ["nmcli", "--wait", "45", "connection", "up", con, "ifname", ifname]
-    if bssid:
-        up += ["ap", bssid]
-    r = run(up, timeout=60)
+
+def _nmcli_quick(ifname, ssid, psk):
+    """Single short nmcli attempt — often fails on Pi after disconnect."""
+    args = ["nmcli", "--wait", "20", "dev", "wifi", "connect", ssid,
+            "password", psk, "ifname", ifname]
+    _log("nmcli quick: %s" % ssid)
+    r = run(args, timeout=30)
     if r is None:
         return None, "nmcli unavailable"
     out = _nm_output(r)
-    _log("profile up rc=%s: %s" % (r.returncode, out[:200]))
-    lines = out.splitlines()
-    return (r.returncode == 0), (lines[-1] if lines else "")
+    _log("nmcli quick rc=%s: %s" % (r.returncode, out[:160]))
+    return (r.returncode == 0), (out.splitlines()[-1] if out else "")
 
 
 def _associated_ssid(ifname):
-    """The SSID the interface is actually associated to, or None."""
     r = run(["iwgetid", ifname, "-r"], timeout=5)
     if r and r.returncode == 0 and r.stdout.strip():
         return r.stdout.strip()
@@ -226,61 +190,130 @@ def _associated_ssid(ifname):
     return None
 
 
-def _wpa_supplicant_connect(ifname, ssid, psk, bssid=None):
-    """Last-resort join with NM hands off the interface."""
-    ok = False
-    try:
-        _nm_manage(ifname, False)
-        time.sleep(0.5)
-        run(["pkill", "-f", "wpa_supplicant.*-i %s" % ifname], timeout=5)
-        time.sleep(0.3)
-        conf = "/tmp/wpa_%s.conf" % ifname
-        with open(conf, "w") as f:
-            f.write("ctrl_interface=DIR=/var/run/wpa_supplicant\n")
-            f.write("network={\n")
-            f.write(' ssid="%s"\n' % ssid.replace("\\", "\\\\").replace('"', '\\"'))
-            if bssid:
-                f.write(" bssid=%s\n" % bssid.lower())
-            f.write(' psk="%s"\n' % psk.replace("\\", "\\\\").replace('"', '\\"'))
-            f.write(" key_mgmt=WPA-PSK\n}\n")
-        run(["ip", "link", "set", ifname, "down"])
-        run(["iw", "dev", ifname, "set", "type", "managed"])
-        run(["ip", "link", "set", ifname, "up"])
-        run(["wpa_supplicant", "-B", "-i", ifname, "-c", conf, "-D", "nl80211"])
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            if _associated_ssid(ifname) == ssid:
-                break
-            time.sleep(1)
-        ok = _associated_ssid(ifname) == ssid
-        if ok:
-            _obtain_lease(ifname)
-        _log("wpa_supplicant ok=%s ssid=%s" % (ok, _associated_ssid(ifname)))
-        return ok
-    except Exception as e:  # noqa: BLE001
-        _log("wpa_supplicant err: %s" % e)
-        return False
-    finally:
-        # If we joined, install an NM profile BEFORE re-managing so NM does
-        # not yank the link and leave the Pi with no network.
-        if ok:
-            run(["pkill", "-f", "wpa_supplicant.*-i %s" % ifname], timeout=5)
-            _nm_manage(ifname, True)
-            _profile_connect(ifname, ssid, psk, bssid=bssid)
-        else:
-            _nm_manage(ifname, True)
+def _joined(ifname, ssid):
+    got = _associated_ssid(ifname)
+    return bool(got and got == ssid)
 
 
 def _obtain_lease(ifname):
-    for tool in ("dhcpcd", "dhclient"):
-        r = run([tool, ifname], timeout=20)
-        if r is not None:
+    for tool in ("dhclient", "dhcpcd"):
+        # Renew cleanly.
+        run([tool, "-r", ifname], timeout=8)
+        r = run([tool, ifname], timeout=25)
+        if r is not None and r.returncode == 0:
             return True
+    # NM might still hand out DHCP if we re-manage later.
     return False
 
 
+def _has_ipv4(ifname):
+    r = run(["ip", "-4", "-o", "addr", "show", "dev", ifname], timeout=5)
+    return bool(r and r.returncode == 0 and "inet " in (r.stdout or ""))
+
+
+def _wpa_connect(ifname, ssid, psk, bssid=None, progress_cb=None):
+    """Primary join: unmanaged → wpa_supplicant → DHCP → NM profile handoff."""
+    if progress_cb:
+        progress_cb("wpa join...")
+    conf = "/tmp/wpa_wifibox_%s.conf" % ifname
+    ctrl = "/var/run/wpa_supplicant"
+    try:
+        os.makedirs(ctrl, exist_ok=True)
+    except OSError:
+        pass
+
+    # Build conf — prefer wpa_passphrase for correct PSK hashing.
+    network_block = None
+    wp = run(["wpa_passphrase", ssid, psk], timeout=5)
+    if wp and wp.returncode == 0 and "psk=" in (wp.stdout or ""):
+        network_block = wp.stdout.strip()
+        if bssid:
+            network_block = network_block.replace(
+                "network={", "network={\n\tbssid=%s" % bssid.lower(), 1)
+    if not network_block:
+        lines = ["network={", '\tssid="%s"' % _escape_wpa(ssid)]
+        if bssid:
+            lines.append("\tbssid=%s" % bssid.lower())
+        lines += ['\tpsk="%s"' % _escape_wpa(psk), "\tkey_mgmt=WPA-PSK", "}"]
+        network_block = "\n".join(lines)
+
+    with open(conf, "w") as f:
+        f.write("ctrl_interface=%s\nupdate_config=0\nap_scan=1\n\n" % ctrl)
+        f.write(network_block)
+        f.write("\n")
+
+    # Hands off from NetworkManager.
+    run(["nmcli", "device", "disconnect", ifname], timeout=10)
+    _nm_manage(ifname, False)
+    time.sleep(0.4)
+    run(["pkill", "-f", "wpa_supplicant.*-i %s" % ifname], timeout=5)
+    time.sleep(0.3)
+
+    run(["ip", "link", "set", ifname, "down"], timeout=5)
+    run(["iw", "dev", ifname, "set", "type", "managed"], timeout=5)
+    run(["ip", "addr", "flush", "dev", ifname], timeout=5)
+    run(["ip", "link", "set", ifname, "up"], timeout=5)
+
+    r = run(["wpa_supplicant", "-B", "-i", ifname, "-c", conf, "-D", "nl80211,wext"],
+            timeout=10)
+    if not r or r.returncode != 0:
+        _log("wpa spawn fail: %s" % _nm_output(r)[:160])
+        _nm_manage(ifname, True)
+        return False, "wpa spawn fail"
+
+    if progress_cb:
+        progress_cb("associating...")
+    deadline = time.time() + 25
+    while time.time() < deadline:
+        if _joined(ifname, ssid):
+            break
+        time.sleep(0.8)
+    if not _joined(ifname, ssid):
+        _log("wpa associate fail, ssid now=%s" % _associated_ssid(ifname))
+        run(["pkill", "-f", "wpa_supplicant.*-i %s" % ifname], timeout=5)
+        _nm_manage(ifname, True)
+        return False, "wpa assoc fail"
+
+    if progress_cb:
+        progress_cb("dhcp...")
+    _obtain_lease(ifname)
+    # Give DHCP a moment even if the client returned early.
+    for _ in range(8):
+        if _has_ipv4(ifname):
+            break
+        time.sleep(0.5)
+
+    # Hand off to NM so the rest of the app (tailscale/upload) sees a normal
+    # managed device — but keep the link: install profile, then re-manage + up.
+    con = _install_nm_profile(ifname, ssid, psk, bssid=None)
+    run(["pkill", "-f", "wpa_supplicant.*-i %s" % ifname], timeout=5)
+    time.sleep(0.3)
+    _nm_manage(ifname, True)
+    if con:
+        up = run(["nmcli", "--wait", "25", "connection", "up", con,
+                  "ifname", ifname], timeout=35)
+        _log("nm handoff up rc=%s: %s" % (
+            up.returncode if up else None, _nm_output(up)[:120]))
+        if up and up.returncode == 0 and _joined(ifname, ssid):
+            _log("wpa→nm handoff ok")
+            return True, None
+        # Handoff dropped the link — fall back to staying on raw wpa.
+        _log("nm handoff lost link; re-wpa")
+        _nm_manage(ifname, False)
+        run(["wpa_supplicant", "-B", "-i", ifname, "-c", conf,
+             "-D", "nl80211,wext"], timeout=10)
+        deadline = time.time() + 15
+        while time.time() < deadline and not _joined(ifname, ssid):
+            time.sleep(0.5)
+        _obtain_lease(ifname)
+
+    ok = _joined(ifname, ssid)
+    _log("wpa final ok=%s ip=%s ssid=%s" % (
+        ok, _has_ipv4(ifname), _associated_ssid(ifname)))
+    return ok, (None if ok else "wpa failed")
+
+
 def has_internet(timeout=5):
-    """Best-effort internet check via ping to 8.8.8.8 / 100.124.251.39."""
     for host in ("8.8.8.8", config.UPLOAD_SERVER):
         r = run(["ping", "-c", "1", "-W", "2", host], timeout=timeout + 2)
         if r and r.returncode == 0:
@@ -289,7 +322,6 @@ def has_internet(timeout=5):
 
 
 def _pick_internal():
-    """Prefer brcmfmac; fall back to config.INTERNAL_NAME if classify misses."""
     ifaces = iface_mod.get_interfaces()
     internal, _external = iface_mod.classify(ifaces)
     if internal:
@@ -298,23 +330,26 @@ def _pick_internal():
     for name, _drv in ifaces:
         if name == want:
             return name
-    return None
+    # Last resort: any non-monitor wireless that isn't the obvious USB attack
+    # adapter name used on this box (wlan1). Prefer wlan0/wl0.
+    for prefer in ("wl0", "wlan0"):
+        for name, _drv in ifaces:
+            if name == prefer:
+                return name
+    return ifaces[0][0] if ifaces else None
 
 
 def _active_connection(ifname):
-    """Return {name, uuid} of the connection currently on ifname, or None."""
     r = run(["nmcli", "-t", "-f", "UUID,NAME,DEVICE", "connection", "show",
              "--active"], timeout=8)
-    if not r or r.returncode != 0:
-        return None
-    for line in r.stdout.splitlines():
-        parts = line.split(":")
-        if len(parts) < 3:
-            continue
-        uuid, name, dev = parts[0], parts[1].replace("\\:", ":"), parts[2]
-        if dev == ifname and name and name != "--":
-            return {"uuid": uuid, "name": name}
-    # Fallback: device show
+    if r and r.returncode == 0:
+        for line in r.stdout.splitlines():
+            parts = line.split(":")
+            if len(parts) < 3:
+                continue
+            uuid, name, dev = parts[0], parts[1].replace("\\:", ":"), parts[2]
+            if dev == ifname and name and name != "--":
+                return {"uuid": uuid, "name": name}
     r = run(["nmcli", "-t", "-f", "GENERAL.CONNECTION", "device", "show",
              ifname], timeout=8)
     if r and r.returncode == 0:
@@ -327,18 +362,13 @@ def _active_connection(ifname):
 
 
 def _restore_prior(ifname, prior, progress_cb=None):
-    """Put the internal NIC back on the network it had before Connect.
-
-    Without this, a failed cracked join leaves wl0 disconnected and the Pi
-    drops off the LAN (SSH dies) until reboot / manual reconnect.
-    """
     if progress_cb:
         progress_cb("restore home...")
     _log("restore prior=%s on %s" % (prior, ifname))
-    _nm_manage(ifname, True)
     run(["pkill", "-f", "wpa_supplicant.*-i %s" % ifname], timeout=5)
+    _nm_manage(ifname, True)
     run(["nmcli", "device", "disconnect", ifname], timeout=15)
-    time.sleep(0.5)
+    time.sleep(0.4)
 
     if prior:
         for key in (prior.get("uuid"), prior.get("name")):
@@ -346,22 +376,17 @@ def _restore_prior(ifname, prior, progress_cb=None):
                 continue
             r = run(["nmcli", "--wait", "35", "connection", "up", str(key),
                      "ifname", ifname], timeout=50)
-            out = _nm_output(r)
-            _log("restore up %s rc=%s: %s" % (
-                key, r.returncode if r else None, out[:160]))
+            _log("restore up %s rc=%s" % (key, r.returncode if r else None))
             if r and r.returncode == 0:
                 if progress_cb:
                     progress_cb("home: %s" % (prior.get("name") or "?")[:14])
                 return True
 
-    # Let NM pick any autoconnect profile for this device.
     r = run(["nmcli", "--wait", "35", "device", "connect", ifname], timeout=50)
     if r and r.returncode == 0:
         if progress_cb:
             progress_cb("home: autoconnect")
         return True
-
-    # Last resort — same path attacks use after monitor-mode churn.
     if restore_network():
         time.sleep(4)
         if progress_cb:
@@ -372,17 +397,8 @@ def _restore_prior(ifname, prior, progress_cb=None):
     return False
 
 
-def _joined(ifname, ssid):
-    got = _associated_ssid(ifname)
-    return bool(got and got == ssid)
-
-
 def connect(ssid, psk, progress_cb=None, stop_flag=None, bssid=None):
-    """Connect to SSID using ONLY the internal wifi (wl0). Association counts as
-    success; internet is a bonus. The external attack card is never touched.
-
-    Disconnects the current (home) network first so nmcli actually switches;
-    on failure / cancel, restores that prior connection so SSH survives.
+    """Connect using internal wifi. Primary path = wpa_supplicant.
 
     Returns (ok, interface_used, error)."""
     ssid = (ssid or "").strip()
@@ -395,112 +411,82 @@ def connect(ssid, psk, progress_cb=None, stop_flag=None, bssid=None):
         if progress_cb:
             progress_cb("no internal wifi")
         return False, None, "no internal wifi"
-
     if progress_cb:
         progress_cb("internal: %s" % name)
 
     _ensure_ready(name)
-
-    # Remember home/LAN profile BEFORE we tear it down.
     prior = _active_connection(name)
     prior_ssid = _associated_ssid(name)
     if prior and progress_cb:
         progress_cb("was: %s" % (prior.get("name") or prior_ssid or "?")[:16])
-    _log("prior connection=%s ssid=%s" % (prior, prior_ssid))
+    _log("prior=%s ssid=%s -> %s" % (prior, prior_ssid, ssid))
 
-    # Don't clobber home if user picked the network we're already on.
     if prior_ssid and prior_ssid == ssid and _joined(name, ssid):
         if progress_cb:
             progress_cb("already on %s" % ssid[:14])
         return True, name, None
 
-    if progress_cb:
-        progress_cb("scanning...")
-    _wifi_rescan(name, wait=3.0)
-
-    # Yes — disconnect first. Otherwise nmcli often no-ops while still on home.
-    run(["nmcli", "device", "disconnect", name], timeout=15)
-    # Only delete profiles for the TARGET ssid (never the home profile).
-    _delete_profiles(ssid)
-    time.sleep(0.5)
-    _wifi_rescan(name, wait=3.5)
-
-    last_err = "failed"
-    success = False
-
-    def _fail_restore(err_short):
+    def _fail(err):
+        short = _short_err(err)
+        if progress_cb:
+            progress_cb("failed: %s" % short)
         _restore_prior(name, prior, progress_cb=progress_cb)
-        return False, name, err_short
+        return False, name, short
 
-    # Attempts: SSID-only first (BSSID pin often causes "activation failed"
-    # when the cracked MAC is 5GHz-only / stale / from another radio).
-    attempts = [
-        ("join ssid...", False),
-        ("retry ssid...", False),
-    ]
-    if bssid:
-        attempts += [
-            ("join bssid...", True),
-            ("retry bssid...", True),
-        ]
+    if stop_flag and stop_flag.is_set():
+        return _fail("cancelled")
 
-    for label, use_bssid in attempts:
-        if stop_flag and stop_flag.is_set():
-            return _fail_restore("cancelled")
+    # Disconnect home so the switch is real.
+    run(["nmcli", "device", "disconnect", name], timeout=15)
+    _delete_target_profiles(ssid)
+    time.sleep(0.3)
+
+    # One quick nmcli shot (cheap when it works). Skip long retries — on this
+    # box they almost always burn time before wpa succeeds anyway.
+    if not _device_unmanaged(name):
         if progress_cb:
-            progress_cb(label)
-        pin = bssid if use_bssid else None
-        ok, err = _nmcli_connect(name, ssid, psk, bssid=pin)
-        if ok is None:
-            break
-        last_err = err or last_err
+            progress_cb("nmcli try...")
+        run(["nmcli", "device", "wifi", "rescan", "ifname", name], timeout=15)
+        time.sleep(2.0)
+        ok, err = _nmcli_quick(name, ssid, psk)
         if ok or _joined(name, ssid):
-            success = True
-            break
-        _wifi_rescan(name, wait=3.0)
-
-    if not success:
-        for label, pin in (("profile...", None),
-                           ("profile+mac...", bssid if bssid else None)):
-            if pin is None and label.startswith("profile+"):
-                continue
-            if stop_flag and stop_flag.is_set():
-                return _fail_restore("cancelled")
             if progress_cb:
-                progress_cb(label)
-            _ensure_ready(name)
-            _wifi_rescan(name, wait=2.5)
-            ok, err = _profile_connect(name, ssid, psk, bssid=pin)
-            if ok is None:
-                last_err = err or last_err
-                break
-            last_err = err or last_err
-            if ok or _joined(name, ssid):
-                success = True
-                break
+                progress_cb("connected" if has_internet()
+                            else "connected (no net)")
+            return True, name, None
+        last = err or "nmcli miss"
+    else:
+        last = "unmanaged"
+        _log("skip nmcli — device unmanaged")
 
-    if not success:
-        if progress_cb:
-            progress_cb("wpa fallback...")
-        if _wpa_supplicant_connect(name, ssid, psk, bssid=None):
-            success = True
+    if stop_flag and stop_flag.is_set():
+        return _fail("cancelled")
 
-    if success:
+    # Primary path that works on the Pi.
+    ok, err = _wpa_connect(name, ssid, psk, bssid=None, progress_cb=progress_cb)
+    if ok or _joined(name, ssid):
         if progress_cb:
             progress_cb("connected" if has_internet()
                         else "connected (no net)")
         return True, name, None
 
-    short = _short_err(last_err)
-    if progress_cb:
-        progress_cb("failed: %s" % short)
-    _log("FAILED %s -> %s (%s)" % (ssid, short, last_err))
-    return _fail_restore(short)
+    # One more wpa attempt with BSSID pin if we have it.
+    if bssid:
+        if progress_cb:
+            progress_cb("wpa+bssid...")
+        ok, err = _wpa_connect(name, ssid, psk, bssid=bssid,
+                               progress_cb=progress_cb)
+        if ok or _joined(name, ssid):
+            if progress_cb:
+                progress_cb("connected" if has_internet()
+                            else "connected (no net)")
+            return True, name, None
+
+    _log("FAILED %s (%s / %s)" % (ssid, last, err))
+    return _fail(err or last)
 
 
 def restore_network():
-    """Restart NetworkManager so the internal wl0 reconnects to its saved home
-    network — restores SSH after an attack's monitor-mode churn disrupted it."""
     for cmd in (["systemctl", "restart", "NetworkManager"],
                 ["sudo", "systemctl", "restart", "NetworkManager"]):
         r = run(cmd, timeout=20)
@@ -510,7 +496,6 @@ def restore_network():
 
 
 def current_ssid():
-    """Return currently associated SSID, or None."""
     r = run(["/usr/sbin/iwconfig"])
     if not r:
         return None
