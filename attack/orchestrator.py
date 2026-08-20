@@ -352,6 +352,12 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
         iface_mod.disable_monitor(config.Runtime.monitor_iface or iface_name)
         _nm_set_managed(iface_name, True)
         config.Runtime.monitor_iface = None
+        # Soft-recover a wedged RTL8822BU so the next Rush sees wlan1 again.
+        try:
+            if not iface_mod.pick_external(iface_mod.get_interfaces()):
+                iface_mod.recover_external_usb(wait=6.0)
+        except Exception:  # noqa: BLE001
+            pass
         # Restart NM so the internal wl0 reconnects to its home network (restores
         # SSH — monitor-mode churn on the external card disrupts NM's wl0).
         try:

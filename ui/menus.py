@@ -347,9 +347,11 @@ def _scan_with_progress(iface_name, driver="", title="SCAN"):
 
 
 def scan_attack():
-    iface = iface_mod.pick_external(iface_mod.get_interfaces())
+    iface = iface_mod.ensure_external()
     if not iface:
-        status("No external interface")
+        status("No external wifi")
+        time.sleep(1.0)
+        status("replug USB adapter")
         time.sleep(1.5)
         return
     config.Runtime.selected_interface = iface
@@ -494,9 +496,11 @@ def quick_attack():
 
 
 def run_and_show(preset):
-    iface = iface_mod.pick_external(iface_mod.get_interfaces())
+    iface = iface_mod.ensure_external()
     if not iface:
-        status("No external interface")
+        status("No external wifi")
+        time.sleep(1.0)
+        status("replug USB adapter")
         time.sleep(1.5)
         return
     name = iface_mod.iface_name(iface)

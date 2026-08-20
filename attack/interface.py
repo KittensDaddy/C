@@ -64,6 +64,88 @@ def pick_external(ifaces):
     return (classify(ifaces)[1] or [None])[0]
 
 
+def _log(msg):
+    try:
+        with open(config.LOG_FILE, "a") as f:
+            f.write("[iface] %s\n" % msg)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _usb_wireless_present():
+    """True if any wireless netdev is on a USB bus (the external adapter)."""
+    try:
+        for name in os.listdir("/sys/class/net"):
+            wireless = "/sys/class/net/%s/wireless" % name
+            device = "/sys/class/net/%s/device" % name
+            if not os.path.exists(wireless):
+                continue
+            try:
+                path = os.path.realpath(device)
+            except OSError:
+                continue
+            if "/usb" in path:
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def recover_external_usb(wait=8.0):
+    """Best-effort revive of a wedged RTL8822BU external adapter.
+
+    Unbind/rebind 1-1, then Pi dwc_otg buspower cycle + modprobe. Returns the
+    picked external iface tuple, or None if still missing (needs physical replug).
+    """
+    if pick_external(get_interfaces()):
+        return pick_external(get_interfaces())
+
+    _log("external missing — attempting USB recover")
+    buspower = "/sys/devices/platform/soc/3f980000.usb/buspower"
+    # Prefer the live USB child if any; else classic Pi port 1-1.
+    dev = "1-1"
+    try:
+        for name in os.listdir("/sys/bus/usb/devices"):
+            if name.startswith("1-") and ":" not in name and name != "1-0":
+                dev = name
+                break
+    except OSError:
+        pass
+
+    for action in (
+        ["sh", "-c",
+         "echo %s > /sys/bus/usb/drivers/usb/unbind 2>/dev/null; "
+         "sleep 2; "
+         "echo %s > /sys/bus/usb/drivers/usb/bind 2>/dev/null" % (dev, dev)],
+        ["sh", "-c",
+         "if [ -w %s ]; then echo 0 > %s; sleep 3; echo 1 > %s; fi"
+         % (buspower, buspower, buspower)],
+        ["modprobe", "-r", "rtw88_8822bu"],
+        ["modprobe", "rtw88_8822bu"],
+    ):
+        run(action, timeout=20)
+        time.sleep(0.5)
+
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        ext = pick_external(get_interfaces())
+        if ext:
+            _log("external recovered: %s" % (ext,))
+            return ext
+        time.sleep(0.5)
+    _log("external still missing after USB recover — replug adapter")
+    return None
+
+
+def ensure_external(ifaces=None):
+    """Return external iface, running USB recover once if it is missing."""
+    ifaces = ifaces if ifaces is not None else get_interfaces()
+    ext = pick_external(ifaces)
+    if ext:
+        return ext
+    return recover_external_usb()
+
+
 def iface_name(iface):
     return iface[0] if isinstance(iface, tuple) else iface
 
