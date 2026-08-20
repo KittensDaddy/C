@@ -347,7 +347,7 @@ def _scan_with_progress(iface_name, driver="", title="SCAN"):
 
 
 def scan_attack():
-    iface = iface_mod.ensure_external()
+    iface = iface_mod.pick_external()
     if not iface:
         status("No external wifi")
         time.sleep(1.0)
@@ -535,11 +535,11 @@ def run_and_show(preset):
                 if e and e["type"] in ("press", "key3"):
                     break
 
-    # After confirm: recover USB if needed, then launch.
+    # After confirm: only recover if the card is actually missing.
     set_animated(True)
     if not iface:
         status("usb recover...")
-        iface = iface_mod.ensure_external()
+        iface = iface_mod.ensure_external(recover=True)
     if not iface:
         status("No external wifi")
         time.sleep(1.0)
@@ -755,7 +755,7 @@ def _scan_time_seconds():
 # Exclude ESSIDs
 # --------------------------------------------------------------------------
 def exclude_menu():
-    iface = iface_mod.ensure_external()
+    iface = iface_mod.pick_external()
     if not iface:
         status("No external wifi")
         time.sleep(1.0)
@@ -812,7 +812,10 @@ def exclude_menu():
 def _recover_psk_ui(entry):
     """Recover the WPA PSK from a known WPS PIN via reaver, live on screen.
     Returns the PSK string, or None on failure/cancel (KEY1/KEY3 to stop)."""
-    iface = iface_mod.ensure_external()
+    iface = iface_mod.pick_external()
+    if not iface:
+        status("usb recover...")
+        iface = iface_mod.ensure_external(recover=True)
     if not iface:
         status("No external wifi")
         time.sleep(1.0)

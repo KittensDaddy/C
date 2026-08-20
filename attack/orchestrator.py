@@ -280,7 +280,7 @@ def _ensure_mon(iface, iface_name, mon, status_cb):
         return iface, iface_name, mon
     if status_cb:
         status_cb({"type": "message", "text": "usb recover..."})
-    recovered = iface_mod.recover_external_usb(wait=8.0)
+    recovered = iface_mod.recover_external_usb(wait=3.0, force=True)
     if not recovered:
         if status_cb:
             status_cb({"type": "message", "text": "usb dead-replug"})
@@ -374,12 +374,11 @@ def _retry_pending_getpsk(pending, mon, iface, iface_name, req, emit,
 # Main entry
 # ---------------------------------------------------------------------------
 def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
-    # Always try USB recover if the external card vanished mid-session —
-    # not just Rush; every attack entry hits this.
-    recovered = iface_mod.ensure_external()
-    if recovered:
-        iface = recovered
-    elif not iface:
+    # Fast path: use the iface the UI already picked. Do NOT USB-recover here —
+    # that was adding 10–20s to every Rush start.
+    if not iface:
+        iface = iface_mod.pick_external()
+    if not iface:
         return AttackResult(ok=False, error="no external wifi", elapsed=0.0)
 
     req = build_request(iface, preset=preset)
@@ -416,7 +415,7 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
         mon = iface_mod.enable_monitor(iface_name)
         if not mon:
             # Card may have wedged between scan and monitor — one recover retry.
-            recovered = iface_mod.recover_external_usb(wait=8.0)
+            recovered = iface_mod.recover_external_usb(wait=3.0, force=True)
             if recovered:
                 iface = recovered
                 iface_name = iface_mod.iface_name(iface)
@@ -439,7 +438,7 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                        for n, _ in iface_mod.get_interfaces()):
                 if status_cb:
                     status_cb({"type": "message", "text": "usb recover..."})
-                recovered = iface_mod.recover_external_usb(wait=8.0)
+                recovered = iface_mod.recover_external_usb(wait=3.0, force=True)
                 if not recovered:
                     results["failed"].append(t.get("essid") or "?")
                     if status_cb:
@@ -520,10 +519,10 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
         iface_mod.disable_monitor(config.Runtime.monitor_iface or iface_name)
         _nm_set_managed(iface_name, True)
         config.Runtime.monitor_iface = None
-        # Soft-recover a wedged RTL8822BU so the next Rush sees wlan1 again.
+        # Don't block teardown on a long USB recover — watchdog / next run handles it.
         try:
-            if not iface_mod.pick_external(iface_mod.get_interfaces()):
-                iface_mod.recover_external_usb(wait=6.0)
+            if not iface_mod.pick_external():
+                iface_mod.recover_external_usb(wait=2.0)
         except Exception:  # noqa: BLE001
             pass
         # Restart NM so the internal wl0 reconnects to its home network (restores

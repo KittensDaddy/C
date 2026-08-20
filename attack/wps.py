@@ -598,7 +598,7 @@ def pixie(mon, target, req, emit, stop_flag, run_id=None, iface_name=None):
 def recover_psk(iface, target, pin, emit, stop_flag=None, timeout=GETPSK_TIMEOUT):
     essid = target.get("essid") or target.get("bssid")
     bssid = target.get("bssid")
-    recovered = iface_mod.ensure_external()
+    recovered = iface_mod.ensure_external(recover=True)
     if recovered:
         iface = recovered
     name = iface_mod.iface_name(iface)

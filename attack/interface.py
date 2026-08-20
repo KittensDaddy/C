@@ -7,6 +7,10 @@ import time
 
 import config
 
+# Don't hammer USB recover — unbind/buspower was adding 10–20s to every miss.
+_last_recover_ts = 0.0
+_RECOVER_COOLDOWN = 60.0
+
 
 def run(cmd, timeout=15):
     try:
@@ -26,7 +30,7 @@ def _driver_of(ifname):
             return os.path.basename(os.readlink(rel))
         except OSError:
             pass
-    out = run(["/usr/sbin/ethtool", "-i", ifname], timeout=2)
+    out = run(["/usr/sbin/ethtool", "-i", ifname], timeout=1)
     if not out:
         return "unknown"
     for line in out.stdout.splitlines():
@@ -35,19 +39,8 @@ def _driver_of(ifname):
     return "unknown"
 
 
-def _iwconfig_scan():
-    out = run(["/usr/sbin/iwconfig"])
-    if not out:
-        return []
-    result = []
-    for line in out.stdout.splitlines():
-        if "IEEE 802.11" in line and line.split():
-            name = line.split()[0]
-            result.append((name, _driver_of(name)))
-    return list(dict((item[0], item) for item in result).values())
-
-
 def _ls_interfaces():
+    """Fast path: sysfs only (no iwconfig/ethtool round-trips)."""
     result = []
     try:
         for name in os.listdir("/sys/class/net"):
@@ -58,8 +51,21 @@ def _ls_interfaces():
     return result
 
 
+def _iwconfig_scan():
+    out = run(["/usr/sbin/iwconfig"], timeout=2)
+    if not out:
+        return []
+    result = []
+    for line in out.stdout.splitlines():
+        if "IEEE 802.11" in line and line.split():
+            name = line.split()[0]
+            result.append((name, _driver_of(name)))
+    return list(dict((item[0], item) for item in result).values())
+
+
 def get_interfaces():
-    return _iwconfig_scan() or _ls_interfaces()
+    # sysfs first — was ~10s when iwconfig/ethtool stalled on a wedged USB NIC.
+    return _ls_interfaces() or _iwconfig_scan()
 
 
 def classify(ifaces):
@@ -69,7 +75,8 @@ def classify(ifaces):
     return internal, external
 
 
-def pick_external(ifaces):
+def pick_external(ifaces=None):
+    ifaces = ifaces if ifaces is not None else get_interfaces()
     return (classify(ifaces)[1] or [None])[0]
 
 
@@ -100,18 +107,30 @@ def _usb_wireless_present():
     return False
 
 
-def recover_external_usb(wait=8.0):
-    """Best-effort revive of a wedged RTL8822BU external adapter.
+def _quick_ext():
+    return pick_external(get_interfaces())
 
-    Unbind/rebind 1-1, then Pi dwc_otg buspower cycle + modprobe. Returns the
-    picked external iface tuple, or None if still missing (needs physical replug).
+
+def recover_external_usb(wait=3.0, force=False):
+    """Revive a missing external USB Wi‑Fi — light steps first, stop early.
+
+    Previously always ran unbind(2s)+buspower(3s)+modprobe+8s wait even when
+    unnecessary. Now: cooldown, check after each step, short waits.
     """
-    if pick_external(get_interfaces()):
-        return pick_external(get_interfaces())
+    global _last_recover_ts
+    ext = _quick_ext()
+    if ext:
+        return ext
 
-    _log("external missing — attempting USB recover")
+    now = time.time()
+    if not force and (now - _last_recover_ts) < _RECOVER_COOLDOWN:
+        _log("recover skipped (cooldown %.0fs)" % (
+            _RECOVER_COOLDOWN - (now - _last_recover_ts)))
+        return None
+    _last_recover_ts = now
+    _log("external missing — USB recover (fast)")
+
     buspower = "/sys/devices/platform/soc/3f980000.usb/buspower"
-    # Prefer the live USB child if any; else classic Pi port 1-1.
     dev = "1-1"
     try:
         for name in os.listdir("/sys/bus/usb/devices"):
@@ -121,37 +140,56 @@ def recover_external_usb(wait=8.0):
     except OSError:
         pass
 
-    for action in (
-        ["sh", "-c",
-         "echo %s > /sys/bus/usb/drivers/usb/unbind 2>/dev/null; "
-         "sleep 2; "
-         "echo %s > /sys/bus/usb/drivers/usb/bind 2>/dev/null" % (dev, dev)],
-        ["sh", "-c",
-         "if [ -w %s ]; then echo 0 > %s; sleep 3; echo 1 > %s; fi"
-         % (buspower, buspower, buspower)],
-        ["modprobe", "-r", "rtw88_8822bu"],
-        ["modprobe", "rtw88_8822bu"],
-    ):
-        run(action, timeout=20)
-        time.sleep(0.5)
+    # 1) Soft: reload driver only (~1s)
+    run(["modprobe", "-r", "rtw88_8822bu"], timeout=5)
+    run(["modprobe", "rtw88_8822bu"], timeout=5)
+    time.sleep(0.8)
+    ext = _quick_ext()
+    if ext:
+        _log("external recovered after modprobe: %s" % (ext,))
+        return ext
 
-    deadline = time.time() + wait
+    # 2) Unbind/rebind USB device (~1s sleep)
+    run(["sh", "-c",
+         "echo %s > /sys/bus/usb/drivers/usb/unbind 2>/dev/null; "
+         "sleep 1; "
+         "echo %s > /sys/bus/usb/drivers/usb/bind 2>/dev/null" % (dev, dev)],
+        timeout=8)
+    time.sleep(0.8)
+    ext = _quick_ext()
+    if ext:
+        _log("external recovered after unbind: %s" % (ext,))
+        return ext
+
+    # 3) Bus power only if still gone (last resort, ~2s)
+    run(["sh", "-c",
+         "if [ -w %s ]; then echo 0 > %s; sleep 1; echo 1 > %s; fi"
+         % (buspower, buspower, buspower)], timeout=8)
+    run(["modprobe", "rtw88_8822bu"], timeout=5)
+
+    deadline = time.time() + max(1.0, float(wait))
     while time.time() < deadline:
-        ext = pick_external(get_interfaces())
+        ext = _quick_ext()
         if ext:
             _log("external recovered: %s" % (ext,))
             return ext
-        time.sleep(0.5)
+        time.sleep(0.4)
     _log("external still missing after USB recover — replug adapter")
     return None
 
 
-def ensure_external(ifaces=None):
-    """Return external iface, running USB recover once if it is missing."""
+def ensure_external(ifaces=None, recover=False):
+    """Return external iface. Recover is OFF by default (was making UI/attacks crawl).
+
+    Pass recover=True only when the caller already knows the card is gone and
+    is willing to wait a few seconds (e.g. mid-attack after a wedge).
+    """
     ifaces = ifaces if ifaces is not None else get_interfaces()
     ext = pick_external(ifaces)
     if ext:
         return ext
+    if not recover:
+        return None
     return recover_external_usb()
 
 
@@ -160,7 +198,7 @@ def iface_name(iface):
 
 
 def is_in_monitor(ifname):
-    out = run(["/usr/sbin/iwconfig", iface_name(ifname)])
+    out = run(["/usr/sbin/iwconfig", iface_name(ifname)], timeout=2)
     return bool(out and "Mode:Monitor" in out.stdout)
 
 
@@ -176,7 +214,7 @@ def lock_channel(mon, channel):
         ["iwconfig", name, "channel", ch],
         ["/usr/sbin/iwconfig", name, "channel", ch],
     ):
-        res = run(cmd, timeout=5)
+        res = run(cmd, timeout=3)
         if res is not None and res.returncode == 0:
             try:
                 with open(config.LOG_FILE, "a") as f:
@@ -198,7 +236,7 @@ def enable_monitor(ifname):
     if is_in_monitor(name):
         return name
     before = {item[0] for item in get_interfaces()}
-    result = run(["/usr/sbin/airmon-ng", "start", name])
+    result = run(["/usr/sbin/airmon-ng", "start", name], timeout=10)
     if result is not None:
         time.sleep(0.2)
         candidates = [name + "mon", name]
@@ -206,9 +244,9 @@ def enable_monitor(ifname):
         for candidate in candidates:
             if is_in_monitor(candidate):
                 return candidate
-    if run(["ip", "link", "set", name, "down"]) is not None:
-        changed = run(["iw", "dev", name, "set", "type", "monitor"])
-        run(["ip", "link", "set", name, "up"])
+    if run(["ip", "link", "set", name, "down"], timeout=3) is not None:
+        changed = run(["iw", "dev", name, "set", "type", "monitor"], timeout=3)
+        run(["ip", "link", "set", name, "up"], timeout=3)
         if changed is not None and changed.returncode == 0 and is_in_monitor(name):
             return name
     return None
@@ -217,12 +255,12 @@ def enable_monitor(ifname):
 def disable_monitor(ifname):
     name = iface_name(ifname)
     # Airmon-created names should be stopped before attempting managed mode.
-    stopped = run(["/usr/sbin/airmon-ng", "stop", name])
+    stopped = run(["/usr/sbin/airmon-ng", "stop", name], timeout=10)
     if stopped is not None and stopped.returncode == 0:
         return True
-    down = run(["ip", "link", "set", name, "down"])
-    changed = run(["iw", "dev", name, "set", "type", "managed"])
-    run(["ip", "link", "set", name, "up"])
+    down = run(["ip", "link", "set", name, "down"], timeout=3)
+    changed = run(["iw", "dev", name, "set", "type", "managed"], timeout=3)
+    run(["ip", "link", "set", name, "up"], timeout=3)
     return bool(down is not None and changed is not None and
                 changed.returncode == 0)
 
