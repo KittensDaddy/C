@@ -820,7 +820,8 @@ def cracked_detail(entry):
                 a = actions[active]
                 if a == "Connect":
                     set_repaint(None)
-                    connect_to_ssid(entry["essid"], entry["psk"])
+                    connect_to_ssid(entry["essid"], entry["psk"],
+                                    bssid=entry.get("bssid"))
                     return
                 if a == "Recover PSK":
                     set_repaint(None)
@@ -914,7 +915,7 @@ def connect_menu():
             elif ev["type"] == "press":
                 e = with_psk[active]
                 set_repaint(None)
-                connect_to_ssid(e["essid"], e["psk"])
+                connect_to_ssid(e["essid"], e["psk"], bssid=e.get("bssid"))
                 return
             elif ev["type"] == "key1":
                 return
@@ -922,14 +923,15 @@ def connect_menu():
         set_repaint(None)
 
 
-def connect_to_ssid(ssid, psk):
+def connect_to_ssid(ssid, psk, bssid=None):
     pv = ProgressView("CONNECT")
 
     def _prog(msg):
         pv.push(msg)
         pv.render()
 
-    ok, iface, err = net_connect.connect(ssid, psk, progress_cb=_prog)
+    ok, iface, err = net_connect.connect(ssid, psk, progress_cb=_prog,
+                                         bssid=bssid)
     if ok:
         _prog("OK connected: %s" % iface)
         # bring up tailscale
