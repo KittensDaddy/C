@@ -24,6 +24,20 @@ from network import connect as net_connect, tailscale, upload as net_upload
 
 _evq = queue.Queue()
 
+# While the user is scrolling, pause the cat/marquee overlays — they push the
+# full framebuffer (~30fps) and race menu redraws, which flickers the LCD.
+_suspend_anim_until = 0.0
+
+
+def note_user_input(hold_s=0.45):
+    """Suppress background LCD overlays briefly after a button event."""
+    global _suspend_anim_until
+    _suspend_anim_until = time.time() + hold_s
+
+
+def _anim_suspended():
+    return time.time() < _suspend_anim_until
+
 
 def set_button_manager(bm):
     bm.callback = _on_button
@@ -56,7 +70,7 @@ def _paint_statusbar(d):
 
 def _animator_loop():
     while True:
-        if _anim_enabled:
+        if _anim_enabled and not _anim_suspended():
             try:
                 # Partial refresh: only the bottom status strip changes, so push
                 # just those rows instead of the whole frame (avoids SPI lag).
@@ -92,7 +106,7 @@ def set_repaint(cb):
 def _marquee_loop():
     while True:
         cb = _repaint_cb
-        if cb is not None:
+        if cb is not None and not _anim_suspended():
             try:
                 cb()
             except Exception:  # noqa: BLE001
@@ -110,6 +124,7 @@ def start_marquee():
 def _on_button(ev):
     # Joystick navigates between menus: left = back (like KEY1), right =
     # enter/select (like the joystick press). Up/down scroll within a list.
+    note_user_input(0.5 if ev.get("hold") else 0.35)
     if ev.get("type") == "left":
         ev["type"] = "key1"
     elif ev.get("type") == "right":
@@ -131,6 +146,49 @@ def flush_events():
             _evq.get_nowait()
     except queue.Empty:
         pass
+
+
+def _coalesce_scroll(first_ev):
+    """Fold queued up/down holds into one net delta so we redraw once.
+
+    Holding the stick queues many events; applying them one full-frame paint
+    each races the status-bar overlay and flickers. Returns (delta, leftover_ev
+    or None) where leftover is the first non-scroll event (re-queued otherwise).
+    """
+    delta = 0
+    if first_ev["type"] == "up":
+        delta = -1
+    elif first_ev["type"] == "down":
+        delta = 1
+    else:
+        return 0, first_ev
+
+    leftover = None
+    while True:
+        try:
+            ev = _evq.get_nowait()
+        except queue.Empty:
+            break
+        t = ev.get("type")
+        if t == "up":
+            delta -= 1
+        elif t == "down":
+            delta += 1
+        else:
+            leftover = ev
+            # Anything after leftover stays queued; put leftover back too.
+            rest = []
+            while True:
+                try:
+                    rest.append(_evq.get_nowait())
+                except queue.Empty:
+                    break
+            _evq.put(leftover)
+            for e in rest:
+                _evq.put(e)
+            leftover = None
+            break
+    return delta, None
 
 
 VISIBLE_ROWS = 7          # FlipHUD rows that fit between header and status bar
@@ -163,10 +221,14 @@ def render_list(d, labels, active, start_idx=0):
 
 
 def _move(active, n, ev):
-    if ev["type"] == "up":
-        return (active - 1) % n
-    if ev["type"] == "down":
-        return (active + 1) % n
+    """Move selection; coalesce held up/down into a single step burst."""
+    if n <= 0:
+        return active
+    if ev["type"] in ("up", "down"):
+        delta, _ = _coalesce_scroll(ev)
+        if delta == 0:
+            return active
+        return (active + delta) % n
     return active
 
 
@@ -495,11 +557,14 @@ def run_and_show(preset):
     def stop_check():
         while True:
             e = wait_event(0.3)
-            if e and e["type"] == "up":
-                st.scroll_up()
-                st.render()
-            if e and e["type"] == "down":
-                st.scroll_down()
+            if e and e["type"] in ("up", "down"):
+                delta, _ = _coalesce_scroll(e)
+                if delta < 0:
+                    for _ in range(-delta):
+                        st.scroll_up()
+                elif delta > 0:
+                    for _ in range(delta):
+                        st.scroll_down()
                 st.render()
             if e and e["type"] == "key1":
                 stop.set()

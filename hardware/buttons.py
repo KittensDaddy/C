@@ -41,10 +41,19 @@ class Button:
             self._pressed_since = now
             self._last_change = now
             return "press"
-        # Held: auto-repeat only for nav keys, after an initial delay, slowly.
+        # Held: auto-repeat only for nav keys. After SCROLL_HOLD_TIME, speed up
+        # (menu loop coalesces bursts into one redraw so this doesn't flicker).
         if not self.repeat:
             return None
-        if now - self._pressed_since >= delay and now - self._last_change >= rate:
+        if now - self._pressed_since < delay:
+            return None
+        held = now - self._pressed_since
+        use_rate = rate
+        if held >= getattr(config, "SCROLL_HOLD_TIME", 2.0):
+            use_rate = getattr(config, "SCROLL_FAST_SPEED", rate)
+        elif held >= delay + 0.6:
+            use_rate = getattr(config, "SCROLL_SLOW_SPEED", rate)
+        if now - self._last_change >= use_rate:
             self._last_change = now
             return "hold"
         return None
