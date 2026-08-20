@@ -245,10 +245,11 @@ def _nm_set_managed(iface_name, managed):
 
 def _record_capture(essid, bssid, cap=None, psk=None, typ="WPA", pin=None,
                     channel=None):
-    """Persist a capture/crack to cracked.json (dedup by bssid)."""
+    """Persist a capture/crack to cracked.json (dedup by normalized BSSID)."""
     entries = load_cracked()
+    want = config._norm_bssid(bssid)
     for e in entries:
-        if e.get("bssid") == bssid:
+        if config._norm_bssid(e.get("bssid")) == want:
             if cap:
                 e["cap"] = cap
             if psk and not e.get("psk"):
@@ -257,10 +258,13 @@ def _record_capture(essid, bssid, cap=None, psk=None, typ="WPA", pin=None,
                 e["pin"] = pin
             if channel and not e.get("channel"):
                 e["channel"] = channel
+            if essid and (not e.get("essid") or
+                          e.get("essid") == e.get("bssid")):
+                e["essid"] = essid
             save_cracked(entries)
             return
     entries.append({"type": typ, "date": int(time.time()), "essid": essid,
-                    "bssid": bssid, "pin": pin, "psk": psk, "cap": cap,
+                    "bssid": want or bssid, "pin": pin, "psk": psk, "cap": cap,
                     "channel": channel})
     save_cracked(entries)
 

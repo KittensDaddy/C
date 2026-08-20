@@ -16,8 +16,9 @@ KEY_RE = re.compile(r"KEY FOUND!\s*\[\s*(.*?)\s*\]")
 
 def _store_psk(bssid, psk):
     entries = load_cracked()
+    want = config._norm_bssid(bssid)
     for e in entries:
-        if e.get("bssid") == bssid:
+        if config._norm_bssid(e.get("bssid")) == want:
             e["psk"] = psk
             save_cracked(entries)
             return

@@ -6,6 +6,7 @@ run). Atomic temp-file replacement, dir mode 0700, cred files 0600.
 """
 import json
 import os
+import re
 import time
 import shutil
 
@@ -76,23 +77,114 @@ def _load_json(path):
 # ---------------------------------------------------------------------------
 # cracked.json
 # ---------------------------------------------------------------------------
+def _looks_like_mac(s):
+    s = (s or "").strip()
+    if not s:
+        return False
+    return bool(re.match(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$", s) or
+                re.match(r"^[0-9A-Fa-f]{12}$", s))
+
+
+def _pick_essid(a, b):
+    """Prefer a real network name over a bare MAC / empty string."""
+    for cand in (a, b):
+        if cand and not _looks_like_mac(cand):
+            return cand
+    return a or b
+
+
+def _pick_cap(a, b):
+    for cand in (a, b):
+        if cand and os.path.exists(cand):
+            return cand
+    return a or b
+
+
+def _merge_two(keep, other):
+    """Fold `other` into `keep` (same normalized BSSID). Mutates keep."""
+    keep["essid"] = _pick_essid(keep.get("essid"), other.get("essid"))
+    for key in ("psk", "pin", "channel", "type"):
+        if other.get(key) and not keep.get(key):
+            keep[key] = other[key]
+    # Prefer a PSK over a PIN-only row when both exist across duplicates.
+    if other.get("psk") and not keep.get("psk"):
+        keep["psk"] = other["psk"]
+    keep["cap"] = _pick_cap(keep.get("cap"), other.get("cap"))
+    keep["date"] = max(int(keep.get("date") or 0), int(other.get("date") or 0))
+    # Canonicalize MAC spelling once.
+    nb = config._norm_bssid(keep.get("bssid") or other.get("bssid"))
+    if nb:
+        keep["bssid"] = nb
+    return keep
+
+
+def merge_by_bssid(entries):
+    """Collapse duplicate cracked rows that share the same MAC.
+
+    Entries with no usable BSSID are left untouched (kept in original order
+    after the merged-MAC rows). Returns (merged_list, changed).
+    """
+    if not entries:
+        return [], False
+    order = []          # first-seen normalized BSSID
+    by_mac = {}         # norm -> entry
+    no_mac = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        nb = config._norm_bssid(e.get("bssid"))
+        if not nb or len(re.sub(r"[^0-9A-Fa-f]", "", nb)) != 12:
+            no_mac.append(dict(e))
+            continue
+        if nb not in by_mac:
+            row = dict(e)
+            row["bssid"] = nb
+            by_mac[nb] = row
+            order.append(nb)
+        else:
+            _merge_two(by_mac[nb], e)
+    merged = [by_mac[k] for k in order] + no_mac
+    changed = len(merged) != len(entries)
+    if not changed:
+        # Also rewrite if any BSSID spelling was non-canonical.
+        for old, new in zip(entries, merged):
+            if not isinstance(old, dict):
+                changed = True
+                break
+            if config._norm_bssid(old.get("bssid")) != new.get("bssid"):
+                changed = True
+                break
+            if old.get("essid") != new.get("essid") or old.get("psk") != new.get("psk"):
+                # Content may have been folded even when counts match? counts
+                # wouldn't match if we folded. Skip.
+                pass
+    return merged, changed
+
+
 def load_cracked():
+    """Load cracked.json, merging same-MAC duplicates (and rewrite if needed)."""
     _migrate()
-    return _load_json(config.CRACKED_FILE)
+    entries = _load_json(config.CRACKED_FILE)
+    merged, changed = merge_by_bssid(entries)
+    if changed:
+        save_cracked(merged)
+    return merged
 
 
 def save_cracked(entries):
     _ensure_dir()
-    return _atomic_write(config.CRACKED_FILE, entries, mode=0o600)
+    merged, _ = merge_by_bssid(entries if isinstance(entries, list) else [])
+    return _atomic_write(config.CRACKED_FILE, merged, mode=0o600)
 
 
 def update_cracked(bssid, **fields):
     """Update an existing cracked entry by BSSID (e.g. backfill a PSK from a
     PIN). Fields are only written when truthy. Returns True if anything changed."""
+    want = config._norm_bssid(bssid)
     entries = load_cracked()
     changed = False
     for e in entries:
-        if e.get("bssid") == bssid:
+        if config._norm_bssid(e.get("bssid")) == want:
             for k, v in fields.items():
                 if v and not e.get(k):
                     e[k] = v
