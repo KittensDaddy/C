@@ -403,6 +403,8 @@ class AttackStatus:
             short = {
                 "no beacon": "soft",
                 "no assoc": "soft",
+                "no pixie": "soft",
+                "wps off": "off",
                 "timeout": "t/o",
                 "no pin": "nopin",
                 "wps lock": "lock",
