@@ -57,11 +57,12 @@ PIXIE_PROGRESS_RE = re.compile(
     re.I)
 
 GETPSK_TIMEOUT = 120
-# Soft windows (capped by WPS Timeout). Visible as BEACON / ASSOC phases.
-BEACON_SOFT_SEC = 8
-ASSOC_SOFT_SEC = 18
-# After assoc/M1, bail if we never reach M3/pixie (avoids M1 spam for 45s).
-PIXIE_PROGRESS_SOFT_SEC = 22
+# Soft windows (capped by WPS Timeout). Looser than the first Rush cut —
+# many APs need a long M1/identity slog before M3/pixie finally lands.
+BEACON_SOFT_SEC = 12
+ASSOC_SOFT_SEC = 30
+# After assoc/M1, wait longer before declaring "no pixie" (was too aggressive).
+PIXIE_PROGRESS_SOFT_SEC = 40
 
 _STDBUF = shutil.which("stdbuf") or (
     "/usr/bin/stdbuf" if os.path.exists("/usr/bin/stdbuf") else None)
