@@ -924,20 +924,23 @@ def connect_menu():
 
 def connect_to_ssid(ssid, psk):
     pv = ProgressView("CONNECT")
-    ok, iface, err = net_connect.connect(ssid, psk,
-                                         progress_cb=pv.push)
+
+    def _prog(msg):
+        pv.push(msg)
+        pv.render()
+
+    ok, iface, err = net_connect.connect(ssid, psk, progress_cb=_prog)
     if ok:
-        pv.push("OK connected: %s" % iface)
+        _prog("OK connected: %s" % iface)
         # bring up tailscale
         if tailscale.up():
-            pv.push("OK tailscale up")
-            pv.push("server reachable: %s" %
-                    ("yes" if tailscale.ping_server() else "no"))
+            _prog("OK tailscale up")
+            _prog("server reachable: %s" %
+                  ("yes" if tailscale.ping_server() else "no"))
         else:
-            pv.push("TS needs auth / down")
+            _prog("TS needs auth / down")
     else:
-        pv.push("ERR %s" % (err or "failed"))
-    pv.render()
+        _prog("ERR %s" % (err or "failed"))
     time.sleep(3)
 
 
