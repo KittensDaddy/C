@@ -743,9 +743,11 @@ def _scan_time_seconds():
 # Exclude ESSIDs
 # --------------------------------------------------------------------------
 def exclude_menu():
-    iface = iface_mod.pick_external(iface_mod.get_interfaces())
+    iface = iface_mod.ensure_external()
     if not iface:
-        status("No external interface")
+        status("No external wifi")
+        time.sleep(1.0)
+        status("replug USB adapter")
         time.sleep(1.5)
         return
     nets = _scan_with_progress(iface[0],
@@ -798,9 +800,11 @@ def exclude_menu():
 def _recover_psk_ui(entry):
     """Recover the WPA PSK from a known WPS PIN via reaver, live on screen.
     Returns the PSK string, or None on failure/cancel (KEY1/KEY3 to stop)."""
-    iface = iface_mod.pick_external(iface_mod.get_interfaces())
+    iface = iface_mod.ensure_external()
     if not iface:
-        status("No external interface")
+        status("No external wifi")
+        time.sleep(1.0)
+        status("replug USB adapter")
         time.sleep(1.5)
         return None
     pv = ProgressView("RECOVER")

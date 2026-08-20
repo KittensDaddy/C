@@ -273,6 +273,14 @@ def _record_capture(essid, bssid, cap=None, psk=None, typ="WPA", pin=None,
 # Main entry
 # ---------------------------------------------------------------------------
 def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
+    # Always try USB recover if the external card vanished mid-session —
+    # not just Rush; every attack entry hits this.
+    recovered = iface_mod.ensure_external()
+    if recovered:
+        iface = recovered
+    elif not iface:
+        return AttackResult(ok=False, error="no external wifi", elapsed=0.0)
+
     req = build_request(iface, preset=preset)
     iface_name = req.interface
     start = time.time()
@@ -298,9 +306,16 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
 
         mon = iface_mod.enable_monitor(iface_name)
         if not mon:
-            return AttackResult(ok=False, error="monitor mode failed",
-                                monitor_iface=iface_name,
-                                elapsed=time.time() - start)
+            # Card may have wedged between scan and monitor — one recover retry.
+            recovered = iface_mod.recover_external_usb(wait=8.0)
+            if recovered:
+                iface = recovered
+                iface_name = iface_mod.iface_name(iface)
+                mon = iface_mod.enable_monitor(iface_name)
+            if not mon:
+                return AttackResult(ok=False, error="monitor mode failed",
+                                    monitor_iface=iface_name,
+                                    elapsed=time.time() - start)
         config.Runtime.monitor_iface = mon
 
         total = len(targets)
@@ -308,6 +323,24 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
             if stop_flag and stop_flag.is_set():
                 results["cancelled"] = True
                 break
+            # If the USB card died mid-run, try recover before the next AP.
+            if not any(n == iface_name or n.startswith(iface_name)
+                       for n, _ in iface_mod.get_interfaces()):
+                if status_cb:
+                    status_cb({"type": "message", "text": "usb recover..."})
+                recovered = iface_mod.recover_external_usb(wait=8.0)
+                if not recovered:
+                    results["failed"].append(t.get("essid") or "?")
+                    if status_cb:
+                        status_cb({"type": "message",
+                                   "text": "usb dead-replug"})
+                    break
+                iface = recovered
+                iface_name = iface_mod.iface_name(iface)
+                mon = iface_mod.enable_monitor(iface_name) or iface_name
+                config.Runtime.monitor_iface = mon
+                _nm_set_managed(iface_name, False)
+
             emit(AttackEvent(EventType.TARGET, essid=t.get("essid"),
                              bssid=t.get("bssid"), current=i, total=total))
 

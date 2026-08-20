@@ -355,6 +355,9 @@ def pixie(mon, target, req, emit, stop_flag):
 def recover_psk(iface, target, pin, emit, stop_flag=None, timeout=GETPSK_TIMEOUT):
     essid = target.get("essid") or target.get("bssid")
     bssid = target.get("bssid")
+    recovered = iface_mod.ensure_external()
+    if recovered:
+        iface = recovered
     name = iface_mod.iface_name(iface)
     tool = "bully" if (not tools.tool_ok(tools.REAVER)
                        and tools.tool_ok(tools.BULLY)) else "reaver"
