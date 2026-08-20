@@ -194,6 +194,9 @@ def opt_bool(container, name, default=False):
 
 def opt_int(container, name, default):
     val = opt_state(container, name, None)
+    # Deauth Sec "Off" must disable interval deauth (not fall back to default).
+    if val == "Off" and name == "Deauth Sec":
+        return 0
     if val in (None, "Off", "All"):
         return default
     try:

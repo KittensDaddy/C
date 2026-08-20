@@ -345,6 +345,11 @@ def scan_attack():
                 config.Runtime.target_bssids = list(selected)
                 config.Runtime.target_bssid = None      # use the multi list
                 config.Runtime.target_essid = None
+                # Stash channel from first selected net for single-target fallback
+                # when last_scan lookup misses.
+                first = next((n for n in nets if n["bssid"] in selected), None)
+                config.Runtime.target_channel = (
+                    first.get("channel") if first else None)
                 set_repaint(None)
                 choose_mode("%d targets" % len(selected))
                 return
@@ -353,6 +358,9 @@ def scan_attack():
                 selected.discard(n["bssid"])
             else:
                 selected.add(n["bssid"])
+                # Keep latest picked channel on Runtime for channel-blind paths.
+                if n.get("channel"):
+                    config.Runtime.target_channel = n.get("channel")
             _render()
         elif ev["type"] == "key1":
             config.Runtime.target_bssids = []

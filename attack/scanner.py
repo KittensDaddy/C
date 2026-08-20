@@ -47,6 +47,23 @@ def run(cmd, timeout=25):
         return None
 
 
+def _freq_to_channel(freq_mhz):
+    """Map MHz center frequency to 802.11 channel number, or None."""
+    try:
+        f = int(freq_mhz)
+    except (ValueError, TypeError):
+        return None
+    if 2412 <= f <= 2472:
+        return str((f - 2407) // 5)
+    if f == 2484:
+        return "14"
+    if 5180 <= f <= 5885:
+        return str((f - 5000) // 5)
+    if 5955 <= f <= 7115:          # 6 GHz (approx)
+        return str((f - 5950) // 5)
+    return None
+
+
 def _parse_iw(stdout):
     """Parse `iw dev <if> scan` output."""
     nets = []
@@ -69,6 +86,11 @@ def _parse_iw(stdout):
             m = re.search(r"DS Parameter set: channel (\d+)", line)
             if m:
                 cur["channel"] = m.group(1)
+            # Many kernels only print freq — derive channel when DS IE missing.
+            if cur.get("channel") is None:
+                m = re.search(r"freq:\s*(\d+)", line)
+                if m:
+                    cur["channel"] = _freq_to_channel(m.group(1))
             if "WPA" in line:
                 cur["enc"] = "WPA"
             elif "WEP" in line:
@@ -142,8 +164,8 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
             parsed = _parse_iwlist(out2.stdout) if out2 else []
         if not parsed:
             # nmcli fallback — pin to the external iface so it never scans wl0.
-            out3 = run([NMCLI, "-t", "-f", "SSID,BSSID,SIGNAL", "dev",
-                        "wifi", "list", "ifname", iface_name])
+            out3 = run([NMCLI, "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,FREQ",
+                        "dev", "wifi", "list", "ifname", iface_name])
             if out3:
                 parsed = _parse_nmcli(out3.stdout)
 
@@ -171,22 +193,32 @@ def scan(ifname, duration=None, progress_cb=None, stop_flag=None):
 
 
 def _parse_nmcli(stdout):
-    """Parse nmcli -t output. BSSID has 6 colon-separated hex bytes."""
+    """Parse nmcli -t SSID:BSSID:SIGNAL:CHAN:FREQ (colon fields; BSSID escaped)."""
     nets = []
-    bssid_re = re.compile(r"((?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}):(-?\d+)")
     for line in stdout.splitlines():
-        m = bssid_re.search(line)
-        if not m:
+        if not line.strip():
             continue
-        bssid = m.group(1).upper()
+        # Split on unescaped colons: BSSID bytes are written as AA\:BB\:...
+        parts = re.split(r"(?<!\\):", line)
+        if len(parts) < 3:
+            continue
+        ssid = parts[0].replace("\\:", ":")
+        bssid = parts[1].replace("\\:", ":").upper()
+        if not re.match(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$", bssid):
+            continue
         try:
-            dbm = int(m.group(2).split("\\")[0]) * -1
+            # nmcli SIGNAL is 0-100; match prior convention of approximate -dBm.
+            dbm = int(parts[2]) * -1
         except (ValueError, TypeError):
             dbm = 0
-        ssid = line[:m.start()].rstrip(":").replace("\\:", ":")
-        ssid = re.sub(r"\\$", "", ssid)  # trailing escape from split on colon
-        nets.append({"essid": ssid, "bssid": bssid,
-                     "signal": dbm, "channel": None, "enc": None})
+        channel = None
+        if len(parts) > 3 and parts[3].isdigit():
+            channel = parts[3]
+        elif len(parts) > 4:
+            channel = _freq_to_channel(parts[4].split()[0]
+                                       if parts[4] else None)
+        nets.append({"essid": ssid or None, "bssid": bssid,
+                     "signal": dbm, "channel": channel, "enc": None})
     return nets
 
 

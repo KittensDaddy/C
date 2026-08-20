@@ -212,7 +212,8 @@ def _nm_set_managed(iface_name, managed):
         pass
 
 
-def _record_capture(essid, bssid, cap=None, psk=None, typ="WPA", pin=None):
+def _record_capture(essid, bssid, cap=None, psk=None, typ="WPA", pin=None,
+                    channel=None):
     """Persist a capture/crack to cracked.json (dedup by bssid)."""
     entries = load_cracked()
     for e in entries:
@@ -223,10 +224,13 @@ def _record_capture(essid, bssid, cap=None, psk=None, typ="WPA", pin=None):
                 e["psk"] = psk
             if pin and not e.get("pin"):
                 e["pin"] = pin
+            if channel and not e.get("channel"):
+                e["channel"] = channel
             save_cracked(entries)
             return
     entries.append({"type": typ, "date": int(time.time()), "essid": essid,
-                    "bssid": bssid, "pin": pin, "psk": psk, "cap": cap})
+                    "bssid": bssid, "pin": pin, "psk": psk, "cap": cap,
+                    "channel": channel})
     save_cracked(entries)
 
 
@@ -281,7 +285,8 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                     cred = r.get("psk") or r.get("pin")
                     results["cracked"].append({"essid": r["essid"], "psk": cred})
                     _record_capture(r["essid"], r["bssid"], psk=r.get("psk"),
-                                    pin=r.get("pin"), typ="WPS")
+                                    pin=r.get("pin"), typ="WPS",
+                                    channel=t.get("channel"))
                     if r.get("psk"):
                         continue  # got the actual PSK — done with this target
                     # PIN-only (no PSK): keep the PIN but still try to capture a
@@ -293,7 +298,7 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                     results["handshakes"].append({"essid": r["essid"],
                                                   "cap": r.get("hash")})
                     _record_capture(r["essid"], r["bssid"], cap=r.get("hash"),
-                                    typ="PMKID")
+                                    typ="PMKID", channel=t.get("channel"))
                     continue
 
             if "wpa" in req.attacks:
@@ -304,7 +309,8 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                 if r.get("ok"):
                     results["handshakes"].append({"essid": r["essid"],
                                                   "cap": r.get("cap")})
-                    _record_capture(r["essid"], r["bssid"], cap=r.get("cap"))
+                    _record_capture(r["essid"], r["bssid"], cap=r.get("cap"),
+                                    channel=t.get("channel") or r.get("channel"))
                 else:
                     results["failed"].append(r.get("essid"))
     finally:
