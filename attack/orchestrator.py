@@ -118,17 +118,30 @@ def _as_target(net):
 def _filtered(nets, req, preset=None):
     cracked_bssids = set()
     if config.opt_bool(req.filters, "Ignore Cracked", False):
-        cracked_bssids = {e.get("bssid") for e in load_cracked() if e.get("psk")}
+        cracked_bssids = {
+            config._norm_bssid(e.get("bssid"))
+            for e in load_cracked() if e.get("psk")}
     min_sig = config.opt_int(req.filters, "Min Signal", None)
+    runtime_excl = {config._norm_bssid(b) for b in (req.exclude_bssids or [])}
+    runtime_excl |= config.excluded_bssids()
+    runtime_excl_essid = {(e or "").strip().upper()
+                          for e in (req.exclude_essids or [])}
     out = []
     for n in nets:
-        b = config._norm_bssid(n.get("bssid")) or n.get("bssid")
+        b = config._norm_bssid(n.get("bssid"))
         if not b:
             continue
-        # Hardcoded home/friendly APs — never attack (by MAC or ESSID).
-        if config.is_excluded_net(n):
+        # Hardcoded + runtime excludes — match by normalized BSSID first.
+        if b in runtime_excl or config.is_excluded_net(n):
+            try:
+                from attack import tools
+                tools.log("skip excluded %s (%s)" % (
+                    b, n.get("essid") or "?"))
+            except Exception:  # noqa: BLE001
+                pass
             continue
-        if b in req.exclude_bssids or n.get("essid") in req.exclude_essids:
+        essid = (n.get("essid") or "").strip()
+        if essid.upper() in runtime_excl_essid:
             continue
         if b in cracked_bssids:
             continue

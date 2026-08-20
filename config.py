@@ -4,6 +4,7 @@
 This module has NO imports from the rest of the project, so any module can
 import it without circular-dependency risk.
 """
+import re
 
 # ---------------------------------------------------------------------------
 # Hardware paths / pins
@@ -143,9 +144,8 @@ DEFAULT_FILTERS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Hardcoded NEVER-attack APs — skipped by BSSID (and ESSID fallback).
+# Hardcoded NEVER-attack APs — skipped by BSSID (primary) and ESSID (fallback).
 # Sources: /home/sun/root/handshakes potfile + pcaps, wifi/hs Tofu cap 2026-02.
-# Tofu_5G MAC not in archives — excluded by ESSID name when scanned.
 # ---------------------------------------------------------------------------
 EXCLUDED_TARGETS = [
     {"bssid": "64:20:E0:2E:43:93", "essid": "LDGARMENT_2.4G"},
@@ -155,28 +155,73 @@ EXCLUDED_TARGETS = [
     {"bssid": "7A:53:0D:1B:7E:39", "essid": "Tofu_2.4G"},   # older potfile
 ]
 
+# Exact ESSID excludes (any case).
 EXCLUDED_ESSIDS = {
-    "LDGARMENT_2.4G", "LDGARMENT_5G",
+    "LDGARMENT_2.4G", "LDGARMENT_5G", "LDGARMENT24G", "LDGARMENT5G",
+    "LDGARMENT_24G", "LDGARMENT_2.4", "LDGARMENT_5",
     "BABYGIRL",
-    "Tofu_2.4G", "Tofu_5G",
-    "TOFU_2.4G", "TOFU_5G",
+    "Tofu_2.4G", "Tofu_5G", "Tofu24G", "Tofu5G",
+    "TOFU_2.4G", "TOFU_5G", "TOFU24G", "TOFU5G",
 }
+
+# Prefix match — catches renames like LDGARMENT24GHz / Tofu_5GHz.
+EXCLUDED_ESSID_PREFIXES = (
+    "LDGARMENT",
+    "BABYGIRL",
+    "TOFU",
+)
 
 
 def _norm_bssid(bssid):
-    return (bssid or "").replace("-", ":").upper()
+    """Normalize to AA:BB:CC:DD:EE:FF (upper). Accepts -, :, or bare hex."""
+    if not bssid:
+        return ""
+    raw = re.sub(r"[^0-9A-Fa-f]", "", str(bssid))
+    if len(raw) != 12:
+        return str(bssid).replace("-", ":").upper()
+    parts = [raw[i:i + 2] for i in range(0, 12, 2)]
+    return ":".join(parts).upper()
 
 
 def excluded_bssids():
     return {_norm_bssid(t["bssid"]) for t in EXCLUDED_TARGETS}
 
 
+def _essid_excluded(essid):
+    if not essid:
+        return False
+    name = essid.strip()
+    upper = name.upper()
+    if upper in {e.upper() for e in EXCLUDED_ESSIDS}:
+        return True
+    # Strip separators so LDGARMENT_2.4G / LDGARMENT24G both match prefix.
+    compact = re.sub(r"[^A-Z0-9]", "", upper)
+    for prefix in EXCLUDED_ESSID_PREFIXES:
+        p = prefix.upper()
+        if upper.startswith(p) or compact.startswith(p):
+            return True
+    return False
+
+
 def is_excluded_net(net):
     """True if this AP must never be attacked (by MAC or ESSID)."""
     if _norm_bssid(net.get("bssid")) in excluded_bssids():
         return True
-    essid = (net.get("essid") or "").strip()
-    return essid.upper() in {e.upper() for e in EXCLUDED_ESSIDS}
+    return _essid_excluded(net.get("essid"))
+
+
+def apply_hardcoded_excludes():
+    """Merge hardcoded BSSIDs into Runtime so every path (UI + engine) skips them."""
+    have = {_norm_bssid(b) for b in Runtime.excluded_bssids}
+    for b in excluded_bssids():
+        if b and b not in have:
+            Runtime.excluded_bssids.append(b)
+            have.add(b)
+    have_e = {e.upper() for e in Runtime.excluded_essids}
+    for e in EXCLUDED_ESSIDS:
+        if e.upper() not in have_e:
+            Runtime.excluded_essids.append(e)
+            have_e.add(e.upper())
 
 
 # ---------------------------------------------------------------------------

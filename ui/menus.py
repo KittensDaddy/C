@@ -304,6 +304,14 @@ def scan_attack():
 
     # Remember the scan so the orchestrator can look up channel/essid by BSSID.
     config.Runtime.last_scan = nets
+    # Hide hardcoded never-attack APs from the picker (still matched by BSSID).
+    nets = [n for n in nets if not config.is_excluded_net(n)]
+    if not nets:
+        ev = ProgressView("SCAN")
+        ev.push("ERR only excluded APs")
+        ev.render()
+        time.sleep(2)
+        return
 
     # Multi-select include: press toggles a target; row 0 launches the attack on
     # everything selected (a '+' marker flags each chosen AP).

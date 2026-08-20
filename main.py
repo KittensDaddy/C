@@ -53,6 +53,8 @@ def main():
 
     # Restore persistent settings
     _restore_settings()
+    # Always fold hardcoded never-attack BSSIDs into Runtime exclusions.
+    config.apply_hardcoded_excludes()
 
     if buttons.available:
         menus.main_menu()
