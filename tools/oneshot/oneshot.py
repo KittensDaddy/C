@@ -16,7 +16,13 @@ import statistics
 import csv
 from pathlib import Path
 from typing import Dict
-import wcwidth
+try:
+    import wcwidth
+except ImportError:  # wifi-box: no pip dep — stub for display width only
+    class wcwidth:
+        @staticmethod
+        def wcswidth(s):
+            return len(s) if s is not None else 0
 
 
 class NetworkAddress:

@@ -38,14 +38,18 @@ def available():
 def _load_wpspin():
     if not os.path.isfile(ONESHOT_PY):
         return None
-    spec = importlib.util.spec_from_file_location("oneshot_vendored", ONESHOT_PY)
-    if not spec or not spec.loader:
+    try:
+        spec = importlib.util.spec_from_file_location("oneshot_vendored", ONESHOT_PY)
+        if not spec or not spec.loader:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        # Avoid running oneshot's CLI main
+        sys.modules["oneshot_vendored"] = mod
+        spec.loader.exec_module(mod)
+        return mod.WPSpin()
+    except Exception as e:  # noqa: BLE001
+        tools.log("oneshot load fail: %s" % e)
         return None
-    mod = importlib.util.module_from_spec(spec)
-    # Avoid running oneshot's CLI main
-    sys.modules["oneshot_vendored"] = mod
-    spec.loader.exec_module(mod)
-    return mod.WPSpin()
 
 
 def vendor_candidates(bssid, limit=VENDOR_MAX):

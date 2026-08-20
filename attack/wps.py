@@ -184,21 +184,30 @@ def _note_pke(bssid, line):
 
 
 def _managed_name(mon, iface_name):
-    """Best-effort managed iface after leaving monitor."""
-    if iface_name:
-        base = iface_name.rstrip("0123456789")
-        # prefer original managed name
-        for n, _ in iface_mod.get_interfaces():
-            if n == iface_name or n == mon.rstrip("mon") or (
-                    iface_name.endswith("mon") is False and n.startswith(iface_name[:4])):
-                if not iface_mod.is_in_monitor(n):
-                    return n
-        if not str(mon).endswith("mon"):
-            return iface_name
-    # airmon: wlan1mon → wlan1
+    """Best-effort managed iface after leaving monitor — must stay on EXTERNAL."""
+    want = iface_name or (str(mon)[:-3] if str(mon).endswith("mon") else mon)
+    want = str(want or "").strip()
+    ifaces = iface_mod.get_interfaces()
+    names = [n for n, _ in ifaces]
+    # Exact match first
+    if want in names and not iface_mod.is_in_monitor(want):
+        return want
+    # airmon rename: wlan1mon → wlan1
+    if want.endswith("mon"):
+        base = want[:-3]
+        if base in names and not iface_mod.is_in_monitor(base):
+            return base
     if mon and str(mon).endswith("mon"):
-        return str(mon)[:-3]
-    return iface_name or mon
+        base = str(mon)[:-3]
+        if base in names and not iface_mod.is_in_monitor(base):
+            return base
+    # Prefer any non-internal USB wireless (never fall back to brcmfmac/wlan0)
+    for n, drv in ifaces:
+        if drv == config.INTERNAL_DRIVER:
+            continue
+        if not iface_mod.is_in_monitor(n):
+            return n
+    return want or mon
 
 
 def _to_managed(mon, iface_name):
@@ -207,6 +216,8 @@ def _to_managed(mon, iface_name):
     name = _managed_name(mon, iface_name)
     # ensure managed + up
     iface_mod.run(["ip", "link", "set", name, "up"])
+    tools.log("wps: managed for oneshot -> %s (was mon=%s iface=%s)" % (
+        name, mon, iface_name))
     return name
 
 
