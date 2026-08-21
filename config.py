@@ -247,6 +247,12 @@ PRESETS = [
     {"name": "WPA Blitz",        "desc": "PMKID then deauth HS",
      "attacks": ["pmkid", "wpa"], "deauth": True, "num_deauths": 10,
      "wpa_time": 180, "scan": 20},
+    # Fast — short per-AP window + frequent deauth bursts. Handshakes from APs
+    # with clients land in seconds; the 60s cap stops it baking client-less APs.
+    {"name": "HS Rush",          "desc": "fast burst deauth HS",
+     "attacks": ["wpa"], "deauth": True, "num_deauths": 10, "deauth_sec": 3,
+     "wpa_time": 60, "scan": 12, "band": "Both", "min_signal": "Off",
+     "max_targets": "10", "ignore_cracked": True},
     # WPS pixie-dust — Rush is the aggressive adaptive profile (20s/AP).
     {"name": "PIXIE Rush",
      "desc": "bake-off pixie+OSHOT",

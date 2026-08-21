@@ -108,16 +108,26 @@ def _has_handshake(cap_path, bssid):
     """True if `cap_path` contains a WPA handshake for `bssid`.
 
     `-w /dev/null` gives aircrack a (empty) wordlist so it runs non-interactively
-    and prints the handshake count in its header instead of prompting."""
+    and prints the handshake count in its network table instead of prompting.
+    We do NOT pass `-b` — aircrack-ng asserts "ap_cur != NULL" when the target
+    has no EAPOL frames, which hides the (legitimate) 0-handshake answer; parse
+    the table row for our BSSID instead."""
     if not os.path.exists(cap_path):
         return False
-    res = tools.run([tools.AIRCRACK, "-a", "2", "-w", "/dev/null",
-                     "-b", bssid, cap_path], timeout=20)
+    res = tools.run([tools.AIRCRACK, "-a", "2", "-w", "/dev/null", cap_path],
+                    timeout=20)
     if not res:
         return False
     out = (res.stdout or "") + (res.stderr or "")
-    return bool(re.search(r"\(\s*[1-9]\d*\s+handshake", out, re.I) or
-                re.search(r"[1-9]\d*\s+handshake", out, re.I))
+    want = (bssid or "").replace(":", "").upper()
+    for line in out.splitlines():
+        # Row format: "1  AA:BB:CC:DD:EE:FF  ESSID  WPA (1 handshake)".
+        if not re.search(r"[1-9]\d*\s+handshake", line, re.I):
+            continue
+        if want and want not in line.replace(":", "").upper():
+            continue
+        return True
+    return False
 
 
 def capture(mon, target, req, emit, stop_flag):
