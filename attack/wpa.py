@@ -229,12 +229,15 @@ def capture(mon, target, req, emit, stop_flag):
                     targets = []
                 sent = 0
                 for client in targets:
-                    cmd = [tools.AIREPLAY, "--ignore-negative-one",
+                    # -D disables aireplay's AP detection: without it aireplay
+                    # hangs "Waiting for beacon" on directed deauth and never
+                    # sends (the channel is already locked via lock_channel).
+                    cmd = [tools.AIREPLAY, "--ignore-negative-one", "-D",
                            "--deauth", str(num_deauth), "-a", bssid]
                     if client:
                         cmd += ["-c", client]
                     cmd.append(mon)
-                    res = tools.run(cmd, timeout=12)
+                    res = tools.run(cmd, timeout=8)
                     out = ""
                     if res:
                         out = ((res.stdout or "") + (res.stderr or "")).strip()
