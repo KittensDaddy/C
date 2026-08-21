@@ -231,6 +231,11 @@ class AttackStatus:
             if ev.get("clients") is not None:
                 self.cur_clients = ev["clients"]
             self._track_countdown(ev.get("cd_max"))
+            # A new phase means the target is actively being attacked again
+            # (e.g. OneShot after a reaver "no beacon" soft-bail) — clear a
+            # stale failed/skipped status so the live phase shows instead of
+            # a frozen "soft".
+            self._clear_stale_fail()
         elif t == "deauth":
             self.last_deauth = time.time()
             if ev.get("signal") is not None:
@@ -279,6 +284,18 @@ class AttackStatus:
             "essid": essid if not self._looks_like_mac(essid) else "",
             "bssid": bssid,
             "signal": item.get("signal"), "status": ""})
+
+    def _clear_stale_fail(self):
+        """Drop a prior failed/skipped status on the current target so a new
+        attack phase (e.g. OneShot after a reaver soft-bail) shows live."""
+        bssid = self._norm_b(self.cur_bssid)
+        key = self._row_key(self.cur_bssid, self.cur_essid)
+        for row in self.nets:
+            if row["key"] == key or (bssid and self._norm_b(row.get("bssid")) == bssid):
+                if row.get("status") in ("failed", "skipped"):
+                    row["status"] = ""
+                    row["cred"] = ""
+                return
 
     def _set(self, bssid, essid, status, cred=None):
         """Apply a result status to the scanned row (matched by normalized BSSID)."""
