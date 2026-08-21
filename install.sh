@@ -288,6 +288,17 @@ EOF
 # This watches the kernel log for that failure signature and resets the
 # adapter's USB port at the first sign of it, before it goes fully dead.
 setup_usb_watchdog() {
+    # rtw88 USB firmware hardening — prevents the adapter from wedging its USB
+    # firmware under sustained monitor/reaver traffic (the "leave idle/ips
+    # failed" -> error -71 -> device drops off the bus problem). On the Pi Zero 2 W
+    # VBUS is hardwired and dwc_otg can't hot-reset, so a hard wedge needs a
+    # reboot — these options stop it from happening in the first place.
+    cat > /etc/modprobe.d/rtw88.conf <<'EOF'
+options rtw88_core disable_lps_deep=Y
+options rtw88_usb switch_usb_mode=N
+EOF
+    info "wrote /etc/modprobe.d/rtw88.conf (disable_lps_deep, switch_usb_mode=N)"
+
     chmod +x "$PROJECT_DIR/attack/usb_watchdog.sh"
     local f="/etc/systemd/system/wifi-usb-watchdog.service"
     cat > "$f" <<EOF

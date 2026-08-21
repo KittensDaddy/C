@@ -35,16 +35,34 @@ usb_power_cycle() {
 }
 
 reset_usb() {
-    local dev
+    local dev bus num
     dev=$(resolve_usbdev)
     echo "$(date '+%F %T') wedge — reset USB $dev" >> "$LOG"
+
+    # 1) USB reset while the device is still enumerable (authorized toggle +
+    #    usbreset). Catches the early wedge before it drops off the bus.
+    if [ -e "/sys/bus/usb/devices/$dev/authorized" ]; then
+        echo 0 > "/sys/bus/usb/devices/$dev/authorized" 2>>"$LOG"
+        sleep 1
+        echo 1 > "/sys/bus/usb/devices/$dev/authorized" 2>>"$LOG"
+        sleep 1
+    fi
+    bus=$(cat "/sys/bus/usb/devices/$dev/busnum" 2>/dev/null)
+    num=$(cat "/sys/bus/usb/devices/$dev/devnum" 2>/dev/null)
+    if [ -n "$bus" ] && [ -n "$num" ] && [ -x /usr/bin/usbreset ]; then
+        /usr/bin/usbreset "$bus/$num" 2>>"$LOG"
+        sleep 1
+    fi
+
+    # 2) Unbind/rebind the device.
     if [ -e "/sys/bus/usb/devices/$dev" ]; then
         echo "$dev" > /sys/bus/usb/drivers/usb/unbind 2>>"$LOG"
         sleep 2
         echo "$dev" > /sys/bus/usb/drivers/usb/bind 2>>"$LOG"
         sleep 2
     fi
-    # If the netdev is still missing, yank bus power (Pi dwc_otg).
+
+    # 3) Netdev still missing -> full rtw88 reload + bus power (last resort).
     local found=0
     for net in /sys/class/net/*; do
         [ -e "$net/wireless" ] || continue
@@ -53,8 +71,8 @@ reset_usb() {
         esac
     done
     if [ "$found" -eq 0 ]; then
+        modprobe -r rtw88_8822bu rtw88_usb rtw88_8822b rtw88_core 2>>"$LOG"
         usb_power_cycle
-        modprobe -r rtw88_8822bu 2>>"$LOG"
         sleep 1
         modprobe rtw88_8822bu 2>>"$LOG"
     fi

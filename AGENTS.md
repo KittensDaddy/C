@@ -111,13 +111,23 @@ LCD_RST=27  LCD_DC=25  LCD_BL=24
 SPI: SCLK=11 MOSI=10 CS=8 (CE0)
 ```
 
-### External USB (RTL8822BU) — why it “dies”
+### External USB (RTL8822BU) — why it "dies"
 Sustained monitor/reaver wedges firmware; dmesg often shows `leave idle/ips failed`,
 `failed to download firmware`, USB **error -71**, then device gone from bus.
-Soft recover (modprobe/unbind/buspower) only helps early; hard death needs
-**physical replug** or full reboot. Watchdog: `attack/usb_watchdog.sh`.
-Optional harden: `options rtw88_core disable_lps_deep=Y` +
-`options rtw88_usb switch_usb_mode=N` in `/etc/modprobe.d/rtw88.conf`.
+
+**On the Pi Zero 2 W a hard wedge (device dropped off the bus, `error -71`)
+can NOT be recovered in software — only a reboot works.** Verified empirically:
+VBUS is hardwired (no software power cut), `usbreset` can't reset the root hub,
+and unbind/rebind of the built-in `dwc_otg` platform driver OOPSes/hangs. A
+reboot works because it resets the whole SoC + USB PHY.
+
+So the real fix is **prevention** (already written by `install.sh`):
+`/etc/modprobe.d/rtw88.conf` → `options rtw88_core disable_lps_deep=Y` +
+`options rtw88_usb switch_usb_mode=N`. Recovery (`attack/interface.py`
+`recover_external_usb`, watchdog `attack/usb_watchdog.sh`) now tries, in order:
+full rtw88 stack reload → `authorized` toggle + `usbreset` (early wedge, device
+still enumerable) → usb unbind/rebind → bus power. Only the early wedge is
+recoverable; hard death still needs reboot.
 
 ### Known issues / ops lessons
 - Pixie PIN without PSK is not connectable — use Cracked → Recover PSK (or wait

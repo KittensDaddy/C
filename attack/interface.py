@@ -2,6 +2,7 @@
 """Wireless interface discovery and exception-safe monitor-mode control."""
 from contextlib import contextmanager
 import os
+import shutil
 import subprocess
 import time
 
@@ -111,11 +112,91 @@ def _quick_ext():
     return pick_external(get_interfaces())
 
 
+def _read_sys(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def _ext_usb_device():
+    """Locate the external WiFi's USB device as {name, bus, dev}, or None.
+
+    Prefer the wireless netdev's device path; fall back to any Realtek (0bda)
+    device still on the bus — that catches the early wedge where the netdev is
+    gone but the device hasn't dropped off the bus yet.
+    """
+    def _dev_from(path):
+        segs = path.rstrip("/").split("/")
+        for i, seg in enumerate(segs):
+            if seg.startswith("usb") and i + 1 < len(segs):
+                d = segs[i + 1]
+                if ":" in d:
+                    d = d.split(":")[0]
+                bus = _read_sys("/sys/bus/usb/devices/%s/busnum" % d)
+                num = _read_sys("/sys/bus/usb/devices/%s/devnum" % d)
+                if bus and num:
+                    return {"name": d, "bus": bus, "dev": num}
+        return None
+
+    try:
+        for name in os.listdir("/sys/class/net"):
+            if not os.path.exists("/sys/class/net/%s/wireless" % name):
+                continue
+            try:
+                path = os.path.realpath("/sys/class/net/%s/device" % name)
+            except OSError:
+                continue
+            if "/usb" in path:
+                found = _dev_from(path)
+                if found:
+                    return found
+    except OSError:
+        pass
+
+    # Fallback: any Realtek USB device still on the bus (wedge, no netdev).
+    try:
+        for d in os.listdir("/sys/bus/usb/devices"):
+            if ":" in d:
+                continue
+            vid = _read_sys("/sys/bus/usb/devices/%s/idVendor" % d)
+            if vid and vid.lower() in ("0bda", "bda"):
+                bus = _read_sys("/sys/bus/usb/devices/%s/busnum" % d)
+                num = _read_sys("/sys/bus/usb/devices/%s/devnum" % d)
+                if bus and num:
+                    return {"name": d, "bus": bus, "dev": num}
+    except OSError:
+        pass
+    return None
+
+
+def _usb_reset(dev):
+    """Reset a wedged-but-still-enumerated device: `authorized` toggle, then
+    usbreset (USBDEVFS_RESET). Returns True if either ran."""
+    ok = False
+    auth = "/sys/bus/usb/devices/%s/authorized" % dev["name"]
+    if os.path.exists(auth):
+        r = run(["sh", "-c",
+                 "echo 0 > %s; sleep 1; echo 1 > %s" % (auth, auth)], timeout=8)
+        ok = r is not None
+    usbreset = shutil.which("usbreset") or (
+        "/usr/bin/usbreset" if os.path.exists("/usr/bin/usbreset") else None)
+    if usbreset:
+        # usbreset takes "BBB/DDD", not a /dev/bus/... path.
+        r = run([usbreset, "%s/%s" % (dev["bus"], dev["dev"])], timeout=8)
+        ok = ok or (r is not None)
+    return ok
+
+
 def recover_external_usb(wait=3.0, force=False):
     """Revive a missing external USB Wi‑Fi — light steps first, stop early.
 
-    Previously always ran unbind(2s)+buspower(3s)+modprobe+8s wait even when
-    unnecessary. Now: cooldown, check after each step, short waits.
+    Order matters: firmware re-download (module reload) -> USB reset while the
+    device is still enumerable -> unbind/rebind -> bus power. On the Pi Zero 2 W
+    VBUS is hardwired and the dwc_otg controller can't be hot-reset, so once the
+    device has dropped off the bus (error -71) only a reboot recovers it — the
+    module options in /etc/modprobe.d/rtw88.conf are what actually prevent that.
     """
     global _last_recover_ts
     ext = _quick_ext()
@@ -128,42 +209,46 @@ def recover_external_usb(wait=3.0, force=False):
             _RECOVER_COOLDOWN - (now - _last_recover_ts)))
         return None
     _last_recover_ts = now
-    _log("external missing — USB recover (fast)")
+    _log("external missing — USB recover")
 
+    dev = _ext_usb_device()
+
+    # 1) Full rtw88 stack reload — re-downloads firmware when the netdev is
+    #    gone but the device is still on the bus (~1-2s).
+    run(["modprobe", "-r", "rtw88_8822bu", "rtw88_usb", "rtw88_8822b",
+         "rtw88_core"], timeout=8)
+    run(["modprobe", "rtw88_8822bu"], timeout=8)
+    time.sleep(1.0)
+    ext = _quick_ext()
+    if ext:
+        _log("external recovered after modprobe reload")
+        return ext
+
+    # 2) USB reset (authorized toggle + usbreset) — early wedge, device present.
+    if dev and _usb_reset(dev):
+        time.sleep(1.0)
+        ext = _quick_ext()
+        if ext:
+            _log("external recovered after USB reset")
+            return ext
+
+    # 3) Unbind/rebind the USB device.
+    if dev:
+        run(["sh", "-c",
+             "echo %s > /sys/bus/usb/drivers/usb/unbind 2>/dev/null; "
+             "sleep 1; "
+             "echo %s > /sys/bus/usb/drivers/usb/bind 2>/dev/null"
+             % (dev["name"], dev["name"])], timeout=8)
+        time.sleep(1.0)
+        ext = _quick_ext()
+        if ext:
+            _log("external recovered after unbind: %s" % (ext,))
+            return ext
+
+    # 4) Bus power only if still gone (last resort; VBUS hardwired on Zero 2 W).
     buspower = "/sys/devices/platform/soc/3f980000.usb/buspower"
-    dev = "1-1"
-    try:
-        for name in os.listdir("/sys/bus/usb/devices"):
-            if name.startswith("1-") and ":" not in name and name != "1-0":
-                dev = name
-                break
-    except OSError:
-        pass
-
-    # 1) Soft: reload driver only (~1s)
-    run(["modprobe", "-r", "rtw88_8822bu"], timeout=5)
-    run(["modprobe", "rtw88_8822bu"], timeout=5)
-    time.sleep(0.8)
-    ext = _quick_ext()
-    if ext:
-        _log("external recovered after modprobe: %s" % (ext,))
-        return ext
-
-    # 2) Unbind/rebind USB device (~1s sleep)
     run(["sh", "-c",
-         "echo %s > /sys/bus/usb/drivers/usb/unbind 2>/dev/null; "
-         "sleep 1; "
-         "echo %s > /sys/bus/usb/drivers/usb/bind 2>/dev/null" % (dev, dev)],
-        timeout=8)
-    time.sleep(0.8)
-    ext = _quick_ext()
-    if ext:
-        _log("external recovered after unbind: %s" % (ext,))
-        return ext
-
-    # 3) Bus power only if still gone (last resort, ~2s)
-    run(["sh", "-c",
-         "if [ -w %s ]; then echo 0 > %s; sleep 1; echo 1 > %s; fi"
+         "if [ -w %s ]; then echo 0 > %s; sleep 2; echo 1 > %s; fi"
          % (buspower, buspower, buspower)], timeout=8)
     run(["modprobe", "rtw88_8822bu"], timeout=5)
 
@@ -174,7 +259,7 @@ def recover_external_usb(wait=3.0, force=False):
             _log("external recovered: %s" % (ext,))
             return ext
         time.sleep(0.4)
-    _log("external still missing after USB recover — replug adapter")
+    _log("external still missing after USB recover — reboot needed")
     return None
 
 
