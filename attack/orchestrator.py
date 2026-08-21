@@ -150,6 +150,12 @@ def _filtered(nets, req, preset=None):
             continue
         if req.bands != "both" and _band_of(n.get("channel")) not in (None, req.bands):
             continue
+        # WPA handshake / PMKID only exist on encrypted networks — open (and
+        # WEP) APs have no WPA handshake to capture, so skip them when only
+        # those attacks are running. WPS can still apply on open nets.
+        if not (req.attacks - {"wpa", "pmkid"}):
+            if n.get("enc") in ("OPEN", "WEP"):
+                continue
         # Missing signal must not count as -100 (was wiping whole Rush lists).
         sig = n.get("signal")
         if min_sig is not None and sig is not None and sig < min_sig:

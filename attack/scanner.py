@@ -95,12 +95,14 @@ def _parse_iw(stdout):
             # WPS IE present → prefer these for pixie (unknown stays None).
             if re.search(r"\bWPS:\b|Wi-?Fi Protected Setup", line, re.I):
                 cur["wps"] = True
-            if "WPA" in line:
+            # WPA1 prints "WPA:", WPA2/WPA3 print "RSN:" — both are WPA-family.
+            if "WPA" in line or "RSN" in line:
                 cur["enc"] = "WPA"
             elif "WEP" in line:
                 cur["enc"] = "WEP"
-            elif cur["enc"] is None and "Group cipher" in line:
-                cur["enc"] = "OPEN"
+            elif cur["enc"] is None and "capability:" in line:
+                # "Privacy" bit set = encrypted (WEP/WPA); absent = open.
+                cur["enc"] = "OPEN" if "Privacy" not in line else None
     if cur:
         nets.append(cur)
     return [n for n in nets if n.get("essid")]

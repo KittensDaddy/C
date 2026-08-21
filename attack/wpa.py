@@ -109,13 +109,12 @@ def _has_handshake(cap_path, bssid):
 
     `-w /dev/null` gives aircrack a (empty) wordlist so it runs non-interactively
     and prints the handshake count in its network table instead of prompting.
-    We do NOT pass `-b` — aircrack-ng asserts "ap_cur != NULL" when the target
-    has no EAPOL frames, which hides the (legitimate) 0-handshake answer; parse
-    the table row for our BSSID instead."""
+    We do NOT pass `-a 2` or `-b` — `-a 2` forces the WPA cracker which asserts
+    "ap_cur != NULL" on any capture without EAPOL, and `-b` has the same issue;
+    without them aircrack just prints the table ("WPA (N handshake)")."""
     if not os.path.exists(cap_path):
         return False
-    res = tools.run([tools.AIRCRACK, "-a", "2", "-w", "/dev/null", cap_path],
-                    timeout=20)
+    res = tools.run([tools.AIRCRACK, "-w", "/dev/null", cap_path], timeout=20)
     if not res:
         return False
     out = (res.stdout or "") + (res.stderr or "")
