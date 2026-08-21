@@ -62,7 +62,10 @@ tail -f ~/C/wifibox.log
 ### Dependency notes
 - **Attack tools:** aircrack-ng, aireplay-ng, airodump-ng, reaver, bully, hcxdumptool
   (+ hcxpcapngtool), **pixiewps**, **wpasupplicant** (OneShot)
-- **Vendored:** `tools/oneshot/oneshot.py` (wcwidth stubbed — no pip)
+- **Vendored:** `tools/oneshot/` = OneShot-C (`nikita-yfh/OneShot-C`) — compiled
+  binary `oneshot` (needs `build-essential`; built by `install.sh`). No pip.
+- **Tool versions (current via apt):** reaver 1.6.6 (t6x fork), pixiewps 1.4.2,
+  bully 1.4 — no from-source builds needed.
 - **UI/HW:** python3, python3-pil, lgpio, spidev, smbus2 (INA219). No numpy.
 - Not installed on purpose: wifite2, hashcat, macchanger, dnsutils, pip/setuptools,
   DKMS RTL8192EU (in-tree `rtl8xxxu` / rtw88 handles monitor on 6.x).
@@ -84,7 +87,7 @@ attack/interface     sysfs IF list; monitor; ensure_external(recover=…)
 attack/scanner       iw→iwlist→nmcli; sort 2.4+WPS first
 attack/orchestrator  targets → WPS/WPA/PMKID; post-list GETPSK retry; run-metric
 attack/wps           reaver pixie → OneShot → GETPSK (no vendor PIN / no online BF)
-attack/oneshot_wps   OneShot subprocess + WPSpin load (hardened)
+attack/oneshot_wps   OneShot-C subprocess (managed-mode pixie)
 attack/wps_log       wps-method / wps-ap helpers + run_id
 attack/usb_watchdog.sh  rtw88 wedge → USB reset (systemd service)
 attack/wpa           handshake + deauth
@@ -95,7 +98,7 @@ camera_store.py      cameras.json
 network/connect      wpa primary; restore home on fail
 network/tailscale    status / up / ping
 network/upload       SCP to 100.124.251.39:/home/sun/handshake/
-tools/oneshot/       vendored OneShot
+tools/oneshot/       vendored OneShot-C (source + Makefile + vulnwsc.txt)
 LCD_1in44.py / INA219.py
 ```
 

@@ -157,6 +157,7 @@ install_packages() {
         aircrack-ng reaver bully pixiewps hcxtools hcxdumptool
         wireless-tools iw iproute2
         network-manager wpasupplicant curl git
+        build-essential
         tailscale
     )
 
@@ -343,6 +344,16 @@ setup_project() {
     else
         warn "No main.py found at $PROJECT_DIR — did you clone the repo?"
     fi
+
+    # Build the OneShot-C binary (architecture-specific, so compile on-device).
+    if [[ -f "$PROJECT_DIR/tools/oneshot/oneshot.c" ]]; then
+        info "building OneShot-C (tools/oneshot/oneshot)..."
+        if make -C "$PROJECT_DIR/tools/oneshot" >> "$LOG" 2>&1; then
+            ok "OneShot-C built"
+        else
+            warn "OneShot-C build failed (oneshot pixie step will be skipped)"
+        fi
+    fi
 }
 
 # ---- [10] verification ------------------------------------------------------
@@ -357,6 +368,7 @@ verify() {
         ["reaver"]="command -v reaver"
         ["bully"]="command -v bully"
         ["hcxdumptool"]="command -v hcxdumptool"
+        ["oneshot"]="test -x $PROJECT_DIR/tools/oneshot/oneshot"
         ["lgpio"]="python3 -c 'import lgpio'"
         ["spidev"]="python3 -c 'import spidev'"
         ["smbus2"]="python3 -c 'import smbus2'"
@@ -372,7 +384,7 @@ verify() {
         failc=$((failc+1))
     fi
 
-    for label in airodump-ng aireplay-ng aircrack-ng reaver bully hcxdumptool lgpio spidev smbus2 PIL tailscale; do
+    for label in airodump-ng aireplay-ng aircrack-ng reaver bully hcxdumptool oneshot lgpio spidev smbus2 PIL tailscale; do
         if eval "${checks[$label]}" 2>/dev/null; then
             ok "$label"
             pass=$((pass+1))

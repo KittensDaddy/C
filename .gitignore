@@ -4,3 +4,4 @@ __pycache__/
 *.bak
 upload_state.json
 cracked.json.upload.tmp
+tools/oneshot/oneshot

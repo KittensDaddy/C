@@ -163,7 +163,7 @@ def _build_cmd(tool, mon, target, ignore_locks):
             cmd.append("-L")
         cmd.append(mon)
         return cmd
-    cmd = [tools.REAVER, "-i", mon, "-b", bssid, "-K", "1", "-N", "-vv"]
+    cmd = [tools.REAVER, "-i", mon, "-b", bssid, "-K", "-N", "-vv"]
     if channel:
         cmd += ["-c", channel]
     if ignore_locks:

