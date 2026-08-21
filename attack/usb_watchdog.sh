@@ -79,9 +79,12 @@ reset_usb() {
 }
 
 journalctl -kf -o cat 2>/dev/null | while read -r line; do
+    # Quoted substrings are literal (quotes are stripped by the case parser);
+    # unquoted * are the globs. Do NOT unquote — bare spaces break the pattern.
     case "$line" in
-        *rtw_usb_reg_sec*|*"failed to download firmware"*|*"leave idle state failed"*|*"leave ips state"*|*"device descriptor read"*error\ -71*|*"device not accepting address"*|*"USB disconnect, device number"*)
+        *rtw_usb_reg_sec*|*"failed to download firmware"*|*"idle state failed"*|*"ips state"*|*"device descriptor read"*"error -71"*|*"device not accepting address"*|*"USB disconnect"*|*"error -110"*|*"error -19"*)
             now=$(date +%s)
+            echo "$(date '+%F %T') watchdog trigger: $line" >> "$LOG"
             if [ $((now - LAST_RESET)) -ge $COOLDOWN ]; then
                 LAST_RESET=$now
                 reset_usb

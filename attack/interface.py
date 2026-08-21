@@ -263,6 +263,33 @@ def recover_external_usb(wait=3.0, force=False):
     return None
 
 
+def refresh_external(iface_name):
+    """Reload the rtw88 stack to re-download firmware, then re-enter monitor.
+
+    The RTL8822BU firmware wedges after sustained monitor/reaver + OneShot
+    managed-mode switching. Reloading the module (and thus re-downloading the
+    firmware) between targets clears that accumulated stress before it becomes
+    a hard wedge that only a reboot fixes. Returns the new monitor iface name
+    (or the managed name if monitor mode can't be re-entered), or None.
+    """
+    name = iface_name(iface_name)
+    disable_monitor(name)
+    time.sleep(0.5)
+    run(["modprobe", "-r", "rtw88_8822bu", "rtw88_usb", "rtw88_8822b",
+         "rtw88_core"], timeout=10)
+    time.sleep(1.0)
+    run(["modprobe", "rtw88_8822bu"], timeout=10)
+    time.sleep(2.5)          # let the netdev re-enumerate
+    ext = _quick_ext()
+    if not ext:
+        return None
+    name = iface_name(ext)
+    run(["ip", "link", "set", name, "up"], timeout=3)
+    mon = enable_monitor(name)
+    _log("refresh_external -> %s" % (mon or name))
+    return mon or name
+
+
 def ensure_external(ifaces=None, recover=False):
     """Return external iface. Recover is OFF by default (was making UI/attacks crawl).
 

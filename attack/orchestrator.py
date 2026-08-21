@@ -24,6 +24,11 @@ except Exception:  # noqa: BLE001
     pmkid_mod = None
 
 
+# Reload the rtw88 firmware every N WPS targets to clear the monitor-mode stress
+# that otherwise wedges the RTL8822BU into a hard death (only reboot recovers).
+_REFRESH_EVERY = 3
+
+
 # ---------------------------------------------------------------------------
 # Request building
 # ---------------------------------------------------------------------------
@@ -481,6 +486,31 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                 config.Runtime.monitor_iface = mon
                 _nm_set_managed(iface_name, False)
 
+            # Proactive firmware refresh: the RTL8822BU wedges under sustained
+            # monitor + OneShot managed switching, then dies so hard only a
+            # reboot recovers it. Reload the rtw88 stack every few APs (only
+            # when WPS is running — that's the stressful path) to clear the
+            # accumulated stress while the device is still healthy.
+            if ("wps" in req.attacks and i > 1
+                    and (i - 1) % _REFRESH_EVERY == 0):
+                if status_cb:
+                    status_cb({"type": "message", "text": "usb refresh..."})
+                new_mon = iface_mod.refresh_external(iface_name)
+                if new_mon:
+                    mon = new_mon
+                    config.Runtime.monitor_iface = mon
+                else:
+                    tools.log("proactive refresh failed — recovering")
+                    recovered = iface_mod.recover_external_usb(wait=3.0, force=True)
+                    if not recovered:
+                        results["failed"].append(t.get("essid") or "?")
+                        break
+                    iface = recovered
+                    iface_name = iface_mod.iface_name(iface)
+                    mon = iface_mod.enable_monitor(iface_name) or iface_name
+                    config.Runtime.monitor_iface = mon
+                    _nm_set_managed(iface_name, False)
+
             emit(AttackEvent(EventType.TARGET, essid=t.get("essid"),
                              bssid=t.get("bssid"), current=i, total=total))
 
@@ -549,10 +579,18 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
         iface_mod.disable_monitor(config.Runtime.monitor_iface or iface_name)
         _nm_set_managed(iface_name, True)
         config.Runtime.monitor_iface = None
-        # Don't block teardown on a long USB recover — watchdog / next run handles it.
+        # If the external card hard-wedged (dropped off the bus), no software
+        # can revive it on the Pi Zero 2 W — reboot the box so the adapter comes
+        # back automatically instead of staying dead until a manual reboot.
+        # Delayed so the run-metric + UI finish first (cracked.json is already saved).
         try:
             if not iface_mod.pick_external():
-                iface_mod.recover_external_usb(wait=2.0)
+                if not iface_mod.recover_external_usb(wait=2.0):
+                    tools.log("usb hard-dead after attack — rebooting in 30s")
+                    iface_mod.run(
+                        ["sh", "-c",
+                         "nohup sh -c 'sleep 30; reboot' >/dev/null 2>&1 &"],
+                        timeout=5)
         except Exception:  # noqa: BLE001
             pass
         # Restart NM so the internal wl0 reconnects to its home network (restores
