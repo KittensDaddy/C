@@ -14,9 +14,10 @@ stdout scraping of a wrapper. **Push → Pi `git pull` / reset → `sudo systemc
 
 Per AP (pixie-dust only; **no online PIN grind**, **no vendor-PIN probes**):
 
-1. **reaver `-K 1`** (monitor) — soft-bail no beacon (~15s) / no assoc (~35s) /
+1. **reaver `-K`** (monitor) — soft-bail no beacon (~15s) / no assoc (~35s) /
    no M3 after M1 (~18s); ~12s in-session hold after PIN for PSK before kill
-2. **OneShot `-K`** (managed on **external** iface only, ≤25s) — skip if soft-bail
+2. **OneShot-C `-K`** (managed on **external** iface only, ≤25s) — runs after any
+   reaver fail except "no assoc" (monitor `no beacon` ≠ managed-mode WPS fail)
 3. **GETPSK** (`reaver -p`) — 8s cool + 45s first try; pin-without-psk queued for
    **post-list retry** (45s cool, signal-sorted, 120s)
 4. Abort GETPSK early on repeated deauth

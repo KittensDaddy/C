@@ -487,9 +487,15 @@ def pixie(mon, target, req, emit, stop_flag, run_id=None, iface_name=None):
         if psk:
             psk_from = "reaver_pixie"
 
-    soft = r.get("soft")
-    # --- 2) OneShot pixie (skip soft no-beacon / cancelled) ---
-    if (not pin and not psk and not cancelled and not soft
+    # OneShot runs in managed mode (wpa_supplicant) — a different radio path
+    # than reaver's monitor-mode beacon/assoc detection. A monitor "no beacon"
+    # soft-bail does NOT mean managed-mode WPS will fail (5 GHz APs in
+    # particular often fail reaver's beacon wait but still answer WPS), so let
+    # OneShot try after it. Only skip when the AP refused reaver's association
+    # ("no assoc") — a stronger signal the target is unreachable.
+    skip_oneshot = (r.get("reason") == "no assoc")
+    # --- 2) OneShot pixie ---
+    if (not pin and not psk and not cancelled and not skip_oneshot
             and not (stop_flag and stop_flag.is_set())):
         methods_tried.append("oneshot_pixie")
         managed = None
