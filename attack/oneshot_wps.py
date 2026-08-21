@@ -21,12 +21,14 @@ ONESHOT_BIN = os.path.join(ONESHOT_DIR, "oneshot")
 ONESHOT_VULN = os.path.join(ONESHOT_DIR, "vulnwsc.txt")
 ONESHOT_MAX_SEC = 25
 
-_PIN_RE = re.compile(
-    r"(?:WPS PIN|PIN(?:\s+is)?|Pin is)\s*[:=]?\s*'?([0-9]{4,8}|)'?",
-    re.I)
-_PSK_RE = re.compile(
-    r"(?:WPA PSK|WPA passphrase|PSK)\s*[:=]?\s*'?([^'\s]+)'?",
-    re.I)
+# OneShot-C's only success output is credential_print():
+#   [+] WPS PIN: 45062193
+#   [+] WPA PSK: hunter22
+# Anchor on those exact markers. The loose "PSK"/"PIN" substrings above were
+# matching wpa_supplicant debug lines ("Prefer PSK format key", "PSK1 hexdump",
+# "Trying pin 12345670") and recording garbage ("format", "1", bogus pins).
+_PIN_RE = re.compile(r"\[\+\]\s*WPS PIN\s*:\s*'?(\d{4,8})", re.I)
+_PSK_RE = re.compile(r"\[\+\]\s*WPA PSK\s*:\s*'?(.+?)'?\s*$", re.I)
 
 
 def available():
@@ -41,11 +43,8 @@ def _parse_creds(text):
     pin = psk = None
     for line in (text or "").splitlines():
         m = _PIN_RE.search(line)
-        if m and m.group(1) is not None and m.group(1) != "":
+        if m:
             pin = m.group(1)
-        # empty pin match: allow explicit empty
-        if re.search(r"Empty PIN|PIN\s*[:=]\s*''", line, re.I):
-            pin = pin or ""
         m = _PSK_RE.search(line)
         if m:
             psk = m.group(1).strip("'\"")
