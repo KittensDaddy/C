@@ -274,9 +274,13 @@ def sort_by_signal(nets):
 
 
 def sort_wps_first(nets):
-    """Known-WPS APs first (potentials), then by signal. Unknowns kept."""
-    return sorted(
-        nets,
-        key=lambda n: (0 if n.get("wps") is True else 1,
-                       -(n.get("signal") or -999)),
-    )
+    """2.4 GHz + known-WPS first (pixie almost never works on 5 GHz)."""
+    def _key(n):
+        try:
+            ch = int(n.get("channel") or 0)
+        except (TypeError, ValueError):
+            ch = 0
+        band = 0 if 1 <= ch <= 14 else 1
+        wps = 0 if n.get("wps") is True else 1
+        return (band, wps, -(n.get("signal") or -999))
+    return sorted(nets, key=_key)

