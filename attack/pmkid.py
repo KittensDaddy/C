@@ -29,8 +29,16 @@ def _band_channel(channel):
         return None
 
 
-def capture(mon, target, req, emit, stop_flag):
-    """Try to grab a PMKID for one target. Returns {"ok","hash","essid","bssid"}."""
+def capture(mon, target, req, emit, stop_flag, force_reload=True):
+    """Try to grab a PMKID for one target. Returns {"ok","hash","essid","bssid"}.
+
+    force_reload: reload the rtw88 stack to managed mode before running
+    hcxdumptool (see below for why). Cycling this on every single target
+    wedges the adapter hard enough to need a reboot — same class of USB
+    fragility as the WPS proactive-refresh wedge this codebase already works
+    around (orchestrator._REFRESH_EVERY) — so the caller should throttle how
+    often it passes True, not call with the default on every target.
+    """
     bssid = target["bssid"]
     essid = target.get("essid") or bssid
     if not tools.tool_ok(tools.HCXDUMP):
@@ -59,7 +67,21 @@ def capture(mon, target, req, emit, stop_flag):
     # is still valid afterward — we just report the (possibly renamed after
     # reload) interface back via the result so the orchestrator can pick up
     # the new name for any attacks after this one in the same run.
-    ifname = iface_mod.reload_managed(mon) or mon
+    if force_reload:
+        ifname = iface_mod.reload_managed(mon)
+        if not ifname:
+            # Adapter didn't re-enumerate. Do NOT fall back to the old `mon`
+            # name and run hcxdumptool anyway — that's what previously masked
+            # a dead adapter as an ordinary capture failure (rc=1, silently
+            # treated like "no PMKID this time") and let the run plow on into
+            # more reload attempts, worsening whatever wedged it. Surface it
+            # as a real failure with mon=None so the caller stops relying on
+            # this interface.
+            tools.log("pmkid: reload_managed failed for %s — adapter gone"
+                      % bssid)
+            return {"ok": False, "essid": essid, "bssid": bssid, "mon": None}
+    else:
+        ifname = mon
 
     # No --bpf: a per-BSSID `--bpfc="wlan addr3 <mac>"` filter reliably drops
     # every frame on this hardware — confirmed live: identical command with

@@ -464,6 +464,8 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
         total = len(targets)
         # PIN found but GETPSK missed — retry after the full list (AP cool-down).
         pending_getpsk = []
+        pmkid_attempts = 0
+        pmkid_adapter_dead = False
         for i, t in enumerate(targets, 1):
             if stop_flag and stop_flag.is_set():
                 results["cancelled"] = True
@@ -550,17 +552,32 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                             "essid": r["essid"], "bssid": r["bssid"]})
                     # PIN-only: still try handshake below if WPA is enabled.
 
-            if "pmkid" in req.attacks and pmkid_mod:
-                r = pmkid_mod.capture(mon, t, req, emit, stop_flag)
-                if r.get("mon"):
-                    # pmkid.capture() reloads the rtw88 stack before every
-                    # attempt (required for it to capture anything on this
-                    # hardware — see attack/pmkid.py), which can hand back a
-                    # differently-named interface; keep the shared `mon` in
-                    # sync so wpa/wps attacks later in this run use the real
-                    # current name instead of one that no longer exists.
-                    mon = r["mon"]
-                    config.Runtime.monitor_iface = mon
+            if "pmkid" in req.attacks and pmkid_mod and not pmkid_adapter_dead:
+                # Reload before the first PMKID attempt and every few after
+                # that (same _REFRESH_EVERY cadence as the WPS proactive
+                # refresh above) — reloading before EVERY target wedges the
+                # RTL8822BU hard enough to need a full reboot, confirmed live.
+                force_reload = (pmkid_attempts == 0
+                               or pmkid_attempts % _REFRESH_EVERY == 0)
+                pmkid_attempts += 1
+                r = pmkid_mod.capture(mon, t, req, emit, stop_flag,
+                                      force_reload=force_reload)
+                if "mon" in r:
+                    if r["mon"]:
+                        # Reload can hand back a differently-named interface;
+                        # keep the shared `mon` in sync so wpa/wps attacks
+                        # later in this run use the real current name.
+                        mon = r["mon"]
+                        config.Runtime.monitor_iface = mon
+                    else:
+                        # reload_managed failed — adapter didn't come back.
+                        # Stop attempting PMKID for the rest of this run
+                        # instead of retrying into a dead interface; wpa/wps
+                        # below will hit the same USB-recovery path if they
+                        # also need the card.
+                        tools.log("pmkid: adapter gone — disabling PMKID "
+                                  "for rest of run %s" % run_id)
+                        pmkid_adapter_dead = True
                 if r.get("ok"):
                     results["handshakes"].append({"essid": r["essid"],
                                                   "cap": r.get("hash")})
