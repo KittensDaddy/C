@@ -263,16 +263,12 @@ def recover_external_usb(wait=3.0, force=False):
     return None
 
 
-def refresh_external(iface_name):
-    """Reload the rtw88 stack to re-download firmware, then re-enter monitor.
-
-    The RTL8822BU firmware wedges after sustained monitor/reaver + OneShot
-    managed-mode switching. Reloading the module (and thus re-downloading the
-    firmware) between targets clears that accumulated stress before it becomes
-    a hard wedge that only a reboot fixes. Returns the new monitor iface name
-    (or the managed name if monitor mode can't be re-entered), or None.
-    """
-    name = iface_name(iface_name)
+def _reload_rtw88(ifname):
+    """Reload the rtw88 stack (re-downloads firmware) and leave the netdev
+    up in managed mode. Shared by refresh_external and reload_managed —
+    the difference is only what the caller does with the interface after.
+    Returns the (possibly new) interface name, or None on failure."""
+    name = iface_name(ifname)
     disable_monitor(name)
     time.sleep(0.5)
     run(["modprobe", "-r", "rtw88_8822bu", "rtw88_usb", "rtw88_8822b",
@@ -285,9 +281,40 @@ def refresh_external(iface_name):
         return None
     name = iface_name(ext)
     run(["ip", "link", "set", name, "up"], timeout=3)
+    return name
+
+
+def refresh_external(ifname):
+    """Reload the rtw88 stack to re-download firmware, then re-enter monitor.
+
+    The RTL8822BU firmware wedges after sustained monitor/reaver + OneShot
+    managed-mode switching. Reloading the module (and thus re-downloading the
+    firmware) between targets clears that accumulated stress before it becomes
+    a hard wedge that only a reboot fixes. Returns the new monitor iface name
+    (or the managed name if monitor mode can't be re-entered), or None.
+    """
+    name = _reload_rtw88(ifname)
+    if not name:
+        return None
     mon = enable_monitor(name)
     _log("refresh_external -> %s" % (mon or name))
     return mon or name
+
+
+def reload_managed(ifname):
+    """Reload the rtw88 stack and leave the netdev in managed mode (NOT
+    monitor). hcxdumptool arms monitor mode itself and reliably fails
+    ("driver is broken", 0 packets captured) when handed an interface some
+    other tool (iw/iwconfig/airmon-ng) already pre-armed into monitor —
+    confirmed live: identical hcxdumptool invocation goes from a real capture
+    to 0 packets purely based on whether the interface started managed or was
+    pre-armed. The accumulated corruption from earlier monitor-mode attacks
+    (reaver/airodump) in the same run also has to be cleared for this to work,
+    which is what the reload itself does. Returns the managed iface name, or
+    None on failure."""
+    name = _reload_rtw88(ifname)
+    _log("reload_managed -> %s" % name)
+    return name
 
 
 def ensure_external(ifaces=None, recover=False):

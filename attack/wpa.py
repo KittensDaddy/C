@@ -104,16 +104,40 @@ def _deauth_ok(res):
     return True
 
 
-def _has_handshake(cap_path, bssid):
-    """True if `cap_path` contains a WPA handshake for `bssid`.
+def _hcxpcap_pair_count(cap_path):
+    """Number of crackable EAPOL message pairs hcxpcapngtool found in `cap_path`.
+
+    hcxpcapngtool actually parses the 4-way handshake state machine (M1-M4,
+    ANONCE/nonce checks, RC-checked pairing) instead of pattern-matching text
+    output, so it doesn't get fooled by WPS EAP-WSC traffic or a pcap that's
+    still being written the way aircrack-ng's table did (that's how the old
+    detector reported hs=1 on a cap with zero real handshake material).
+    Returns -1 if hcxpcapngtool isn't available (caller falls back to aircrack)."""
+    if not tools.HCXPCAP or not os.path.exists(cap_path):
+        return -1
+    out_hash = cap_path + ".22000.tmp"
+    try:
+        res = tools.run([tools.HCXPCAP, cap_path, "-o", out_hash], timeout=20)
+    finally:
+        try:
+            os.remove(out_hash)
+        except OSError:
+            pass
+    if not res:
+        return -1
+    out = (res.stdout or "") + (res.stderr or "")
+    m = re.search(r"EAPOL pairs \(best\)\.+:\s*(\d+)", out)
+    return int(m.group(1)) if m else 0
+
+
+def _aircrack_handshake(cap_path, bssid):
+    """True if aircrack-ng reports a WPA handshake for `bssid` in `cap_path`.
 
     `-w /dev/null` gives aircrack a (empty) wordlist so it runs non-interactively
     and prints the handshake count in its network table instead of prompting.
     We do NOT pass `-a 2` or `-b` — `-a 2` forces the WPA cracker which asserts
     "ap_cur != NULL" on any capture without EAPOL, and `-b` has the same issue;
     without them aircrack just prints the table ("WPA (N handshake)")."""
-    if not os.path.exists(cap_path):
-        return False
     res = tools.run([tools.AIRCRACK, "-w", "/dev/null", cap_path], timeout=20)
     if not res:
         return False
@@ -127,6 +151,55 @@ def _has_handshake(cap_path, bssid):
             continue
         return True
     return False
+
+
+def _has_handshake(cap_path, bssid):
+    """True only if `cap_path` holds a real, crackable 4-way handshake.
+
+    hcxpcapngtool is authoritative when available: it parses the actual EAPOL
+    state machine (M1-M4 pairing), unlike aircrack-ng's table which miscounts
+    a pcap that's still being written and can't tell WPS EAP-WSC traffic from
+    a real handshake — that combination is what produced phantom hs=1 reports
+    with zero real handshake material on disk. Falls back to aircrack-ng's
+    table only when hcxpcapngtool isn't installed."""
+    if not os.path.exists(cap_path):
+        return False
+    pairs = _hcxpcap_pair_count(cap_path)
+    if pairs >= 0:
+        return pairs > 0
+    return _aircrack_handshake(cap_path, bssid)
+
+
+def prune_captures(cap_dir=None):
+    """Delete stored .cap files that hold no real handshake (+ their .csv).
+
+    Sweeps the capture dir and removes phantom captures the old detector left
+    behind. Returns (removed, kept). BSSID is taken from the filename suffix
+    (..._AABBCCDDEEFF-01.cap) so aircrack matches the right row."""
+    cap_dir = cap_dir or config.CAPTURE_DIR
+    removed = kept = 0
+    try:
+        names = os.listdir(cap_dir)
+    except OSError:
+        return (0, 0)
+    for name in names:
+        if not name.endswith("-01.cap"):
+            continue
+        cap = os.path.join(cap_dir, name)
+        m = re.search(r"_([0-9A-Fa-f]{12})-01\.cap$", name)
+        bssid = ":".join(re.findall("..", m.group(1))) if m else ""
+        if _has_handshake(cap, bssid):
+            kept += 1
+            continue
+        removed += 1
+        for f in (cap, cap[:-4] + ".csv"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        tools.log("prune_captures: removed phantom %s" % name)
+    tools.log("prune_captures: removed=%d kept=%d" % (removed, kept))
+    return (removed, kept)
 
 
 def capture(mon, target, req, emit, stop_flag):
@@ -258,9 +331,28 @@ def capture(mon, target, req, emit, stop_flag):
                              signal=signal, clients=len(clients)))
 
             if _has_handshake(cap, bssid):
-                emit(AttackEvent(EventType.HANDSHAKE, essid=essid, bssid=bssid))
-                return {"ok": True, "cap": cap, "essid": essid, "bssid": bssid,
-                        "channel": channel}
+                # Confirm on the settled file: aircrack miscounts a pcap that
+                # airodump is still writing, which is how phantom handshakes
+                # (hs=1 with zero EAPOL on disk) got reported. Stop the dump,
+                # let it flush, then re-verify — and delete the cap if false.
+                _stop_proc(dump)
+                dump = None
+                time.sleep(0.8)
+                if _has_handshake(cap, bssid):
+                    emit(AttackEvent(EventType.HANDSHAKE, essid=essid,
+                                     bssid=bssid))
+                    return {"ok": True, "cap": cap, "essid": essid,
+                            "bssid": bssid, "channel": channel}
+                tools.log("wpa: false handshake for %s — removing %s"
+                          % (bssid, os.path.basename(cap)))
+                for f in (cap, csv):
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
+                emit(AttackEvent(EventType.FAILED, essid=essid, bssid=bssid,
+                                 detail="no handshake"))
+                return {"ok": False, "essid": essid, "bssid": bssid}
 
             time.sleep(3)
     finally:

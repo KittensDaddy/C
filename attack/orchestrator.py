@@ -552,6 +552,15 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
 
             if "pmkid" in req.attacks and pmkid_mod:
                 r = pmkid_mod.capture(mon, t, req, emit, stop_flag)
+                if r.get("mon"):
+                    # pmkid.capture() reloads the rtw88 stack before every
+                    # attempt (required for it to capture anything on this
+                    # hardware — see attack/pmkid.py), which can hand back a
+                    # differently-named interface; keep the shared `mon` in
+                    # sync so wpa/wps attacks later in this run use the real
+                    # current name instead of one that no longer exists.
+                    mon = r["mon"]
+                    config.Runtime.monitor_iface = mon
                 if r.get("ok"):
                     results["handshakes"].append({"essid": r["essid"],
                                                   "cap": r.get("hash")})
