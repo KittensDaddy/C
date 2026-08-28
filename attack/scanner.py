@@ -64,6 +64,20 @@ def _freq_to_channel(freq_mhz):
     return None
 
 
+def _finalize_enc(entry):
+    """Resolve enc from the recorded Privacy bit when no WPA/RSN/WEP IE line
+    ever appeared — a plain WEP AP has the Privacy bit set but no IE that
+    contains the literal substring 'WEP', so without this it was left as
+    None and slipped past the orchestrator's open/WEP skip filter."""
+    if entry is None:
+        return None
+    if entry.get("enc") is None:
+        entry["enc"] = "WEP" if entry.pop("_privacy", False) else "OPEN"
+    else:
+        entry.pop("_privacy", None)
+    return entry
+
+
 def _parse_iw(stdout):
     """Parse `iw dev <if> scan` output."""
     nets = []
@@ -72,11 +86,11 @@ def _parse_iw(stdout):
         line = line.strip()
         if line.startswith("BSS "):
             if cur:
-                nets.append(cur)
+                nets.append(_finalize_enc(cur))
             m = re.search(r"BSS (([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})", line)
             cur = {"bssid": m.group(1) if m else None,
                    "essid": None, "signal": None, "channel": None,
-                   "enc": None, "wps": None}
+                   "enc": None, "wps": None, "_privacy": False}
         elif cur is not None:
             m = re.search(r"signal:\s*([-0-9]+)", line)
             if m:
@@ -100,11 +114,12 @@ def _parse_iw(stdout):
                 cur["enc"] = "WPA"
             elif "WEP" in line:
                 cur["enc"] = "WEP"
-            elif cur["enc"] is None and "capability:" in line:
-                # "Privacy" bit set = encrypted (WEP/WPA); absent = open.
-                cur["enc"] = "OPEN" if "Privacy" not in line else None
+            elif "capability:" in line:
+                # Record the Privacy bit; resolved to WEP/OPEN in
+                # _finalize_enc once we know no WPA/RSN IE ever showed up.
+                cur["_privacy"] = "Privacy" in line
     if cur:
-        nets.append(cur)
+        nets.append(_finalize_enc(cur))
     return [n for n in nets if n.get("essid")]
 
 
@@ -116,12 +131,12 @@ def _parse_iwlist(stdout):
         line = line.strip()
         if "Cell " in line and "Address:" in line:
             if cur:
-                nets.append(cur)
+                nets.append(_finalize_enc(cur))
             m = re.search(r"Address:\s*(([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})",
                           line)
             cur = {"bssid": m.group(1) if m else None,
                    "essid": None, "signal": None, "channel": None,
-                   "enc": None, "wps": None}
+                   "enc": None, "wps": None, "_privacy": False}
         elif cur is not None:
             m = re.search(r'ESSID:\s*"(.*)"', line)
             if m:
@@ -134,8 +149,12 @@ def _parse_iwlist(stdout):
                 cur["channel"] = m.group(1)
             if "WPA" in line:
                 cur["enc"] = "WPA"
+            elif "Encryption key:" in line:
+                # No WPA/RSN IE line ever shows for plain WEP — iwlist marks
+                # it only here ("Encryption key:on"/"off").
+                cur["_privacy"] = "on" in line.lower()
     if cur:
-        nets.append(cur)
+        nets.append(_finalize_enc(cur))
     return [n for n in nets if n.get("essid")]
 
 

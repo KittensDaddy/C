@@ -263,8 +263,8 @@ def main_menu():
     while True:
         d = display.begin()
         box(d, "MAIN")
-        labels = ["Scan & Attack", "Quick Attack", "Crack", "Cracked",
-                  "Connect", "Upload", "Cameras", "Config", "SysCheck"]
+        labels = ["Scan & Attack", "Quick Attack", "Results",
+                  "Cameras", "Config", "SysCheck"]
         active = 0
         render_list(d, labels, active)
         display.show()
@@ -291,16 +291,10 @@ def main_menu():
                     config.Runtime.target_channel = None
                     config.Runtime.target_bssids = []
                     quick_attack()
-                elif choice == "Crack":
-                    crack_menu()
+                elif choice == "Results":
+                    results_menu()
                 elif choice == "Config":
                     config_menu()
-                elif choice == "Cracked":
-                    cracked_viewer()
-                elif choice == "Connect":
-                    connect_menu()
-                elif choice == "Upload":
-                    do_upload()
                 elif choice == "Cameras":
                     cameras_menu()
                 elif choice == "SysCheck":
@@ -623,6 +617,45 @@ def run_and_show(preset):
     time.sleep(3)
     flush_events()   # drop any button mashing during the DONE screen so it
                       # doesn't leak into the menu we return to
+
+
+# --------------------------------------------------------------------------
+# Results — cracked creds, manual crack, connect, upload (grouped off MAIN so
+# the top-level list stays inside VISIBLE_ROWS without scrolling).
+# --------------------------------------------------------------------------
+def results_menu():
+    labels = ["Cracked", "Crack", "Connect", "Upload"]
+    active = 0
+    d = display.begin()
+    box(d, "RESULTS")
+    render_list(d, labels, active)
+    display.show()
+    while True:
+        ev = wait_event()
+        if not ev:
+            continue
+        active = _move(active, len(labels), ev)
+        if ev["type"] in ("up", "down"):
+            d = display.begin()
+            box(d, "RESULTS")
+            render_list(d, labels, active)
+            display.show()
+        elif ev["type"] == "press":
+            choice = labels[active]
+            if choice == "Cracked":
+                cracked_viewer()
+            elif choice == "Crack":
+                crack_menu()
+            elif choice == "Connect":
+                connect_menu()
+            elif choice == "Upload":
+                do_upload()
+            d = display.begin()
+            box(d, "RESULTS")
+            render_list(d, labels, active)
+            display.show()
+        elif ev["type"] == "key1":
+            return
 
 
 # --------------------------------------------------------------------------

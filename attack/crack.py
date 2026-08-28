@@ -6,6 +6,7 @@ server: hand the capture file to the strong box over Tailscale (network.upload).
 """
 import os
 import re
+import time
 
 import config
 from attack import tools
@@ -14,7 +15,7 @@ from cracked_store import load_cracked, save_cracked
 KEY_RE = re.compile(r"KEY FOUND!\s*\[\s*(.*?)\s*\]")
 
 
-def _store_psk(bssid, psk):
+def _store_psk(bssid, psk, essid=None):
     entries = load_cracked()
     want = config._norm_bssid(bssid)
     for e in entries:
@@ -22,6 +23,12 @@ def _store_psk(bssid, psk):
             e["psk"] = psk
             save_cracked(entries)
             return
+    # Entry vanished from cracked_store between load and crack (e.g. edited by
+    # another process) — append rather than silently dropping a finished crack.
+    tools.log("crack: no cracked_store entry for %s — appending new" % bssid)
+    entries.append({"type": "WPA", "date": int(time.time()),
+                    "essid": essid, "bssid": want or bssid, "psk": psk,
+                    "pin": None, "cap": None, "channel": None})
     save_cracked(entries)
 
 
@@ -50,7 +57,7 @@ def crack_onbox(entry, progress_cb=None):
     m = KEY_RE.search((res.stdout or "") + (res.stderr or ""))
     if m:
         psk = m.group(1)
-        _store_psk(entry.get("bssid"), psk)
+        _store_psk(entry.get("bssid"), psk, essid=entry.get("essid"))
         return {"ok": True, "psk": psk}
     return {"ok": False, "error": "not in wordlist"}
 
