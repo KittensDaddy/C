@@ -10,6 +10,25 @@ Native attack engine (no wifite2): `airodump-ng`/`aireplay-ng` (WPA handshake) a
 `reaver`/`bully` + **OneShot** (WPS pixie) driven directly — structured logs, no
 stdout scraping of a wrapper. **Push → Pi `git pull` / reset → `sudo systemctl restart wifibox`.**
 
+## Workflow — test on the Pi BEFORE commit/push
+
+SSH key auth works (`sun@192.168.1.83`, no password). For any code fix/update:
+
+1. Edit locally, then copy changed files straight to the Pi and test there:
+   ```bash
+   scp attack/orchestrator.py sun@192.168.1.83:~/C/attack/
+   ssh sun@192.168.1.83 'sudo systemctl restart wifibox; systemctl is-active wifibox; tail -n 20 ~/C/wifibox.log'
+   ```
+2. Only after it works on the Pi: `git commit` + `git push`, then sync both
+   branches (`main` + `ipcam`).
+
+Pi git pulls corrupt easily (empty `.git/objects` files — see Known issues):
+`git pull` fails silently with `error: object file ... is empty` / `fatal: bad
+object HEAD` and the working tree stays on old code. Recovery:
+```bash
+ssh sun@192.168.1.83 'cd ~/C && find .git/objects -type f -empty -delete && git fetch origin && git reset --hard origin/main'
+```
+
 ### PIXIE Rush (bake-off) — latest WPS path
 
 Per AP (pixie-dust only; **no online PIN grind**, **no vendor-PIN probes**):
