@@ -10,7 +10,6 @@ import subprocess
 import time
 
 import config
-from attack import interface as iface_mod
 from attack import tools
 from attack.model import AttackEvent, EventType
 
@@ -29,20 +28,23 @@ def _band_channel(channel):
         return None
 
 
-def capture(mon, target, req, emit, stop_flag, force_reload=True):
+def capture(mon, target, req, emit, stop_flag):
     """Try to grab a PMKID for one target. Returns {"ok","hash","essid","bssid"}.
 
-    force_reload: reload the rtw88 stack to managed mode before running
-    hcxdumptool (see below for why). Cycling this on every single target
-    wedges the adapter hard enough to need a reboot — same class of USB
-    fragility as the WPS proactive-refresh wedge this codebase already works
-    around (orchestrator._REFRESH_EVERY) — so the caller should throttle how
-    often it passes True, not call with the default on every target.
+    wifite-style: run hcxdumptool straight on the already-monitor interface — no
+    rtw88 driver reload. Repeated full reloads (reload_managed -> modprobe -r
+    rtw88_*) hard-wedge the RTL8822BU (hcxdumptool rc=1 -> wlan gone -> USB -71,
+    reboot-only), so we never reload here; hcxdumptool arms monitor itself and we
+    pass the interface through untouched.
     """
     bssid = target["bssid"]
     essid = target.get("essid") or bssid
     if not tools.tool_ok(tools.HCXDUMP):
         return {"ok": False, "essid": essid, "bssid": bssid}
+    ifname = mon
+    if not ifname:
+        tools.log("pmkid: no monitor iface for %s" % bssid)
+        return {"ok": False, "essid": essid, "bssid": bssid, "mon": None}
     os.makedirs(config.CAPTURE_DIR, exist_ok=True)
     base = os.path.join(config.CAPTURE_DIR, "%s_%s" % (_safe(essid),
                         bssid.replace(":", "")))
@@ -56,32 +58,6 @@ def capture(mon, target, req, emit, stop_flag, force_reload=True):
 
     timeout = config.opt_int(req.timing, "WPA Timeout", 300)
     channel = _band_channel(target.get("channel"))
-
-    # hcxdumptool needs a fresh rtw88 reload + a managed-mode (not pre-armed
-    # monitor) interface to actually capture anything on this hardware —
-    # confirmed live: handed a monitor-mode interface already used by
-    # reaver/airodump earlier in the run, it reliably reports "driver is
-    # broken" and 0 packets; reload to managed first, then let it self-arm,
-    # and the exact same command captures real traffic. hcxdumptool leaves
-    # the interface in monitor mode when it exits, so the caller's `mon` name
-    # is still valid afterward — we just report the (possibly renamed after
-    # reload) interface back via the result so the orchestrator can pick up
-    # the new name for any attacks after this one in the same run.
-    if force_reload:
-        ifname = iface_mod.reload_managed(mon)
-        if not ifname:
-            # Adapter didn't re-enumerate. Do NOT fall back to the old `mon`
-            # name and run hcxdumptool anyway — that's what previously masked
-            # a dead adapter as an ordinary capture failure (rc=1, silently
-            # treated like "no PMKID this time") and let the run plow on into
-            # more reload attempts, worsening whatever wedged it. Surface it
-            # as a real failure with mon=None so the caller stops relying on
-            # this interface.
-            tools.log("pmkid: reload_managed failed for %s — adapter gone"
-                      % bssid)
-            return {"ok": False, "essid": essid, "bssid": bssid, "mon": None}
-    else:
-        ifname = mon
 
     # No --bpf: a per-BSSID `--bpfc="wlan addr3 <mac>"` filter reliably drops
     # every frame on this hardware — confirmed live: identical command with

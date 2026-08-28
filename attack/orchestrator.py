@@ -24,11 +24,6 @@ except Exception:  # noqa: BLE001
     pmkid_mod = None
 
 
-# Reload the rtw88 firmware every N WPS targets to clear the monitor-mode stress
-# that otherwise wedges the RTL8822BU into a hard death (only reboot recovers).
-_REFRESH_EVERY = 3
-
-
 # ---------------------------------------------------------------------------
 # Request building
 # ---------------------------------------------------------------------------
@@ -464,7 +459,6 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
         total = len(targets)
         # PIN found but GETPSK missed — retry after the full list (AP cool-down).
         pending_getpsk = []
-        pmkid_attempts = 0
         pmkid_adapter_dead = False
         for i, t in enumerate(targets, 1):
             if stop_flag and stop_flag.is_set():
@@ -487,31 +481,6 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                 mon = iface_mod.enable_monitor(iface_name) or iface_name
                 config.Runtime.monitor_iface = mon
                 _nm_set_managed(iface_name, False)
-
-            # Proactive firmware refresh: the RTL8822BU wedges under sustained
-            # monitor + OneShot managed switching, then dies so hard only a
-            # reboot recovers it. Reload the rtw88 stack every few APs (only
-            # when WPS is running — that's the stressful path) to clear the
-            # accumulated stress while the device is still healthy.
-            if ("wps" in req.attacks and i > 1
-                    and (i - 1) % _REFRESH_EVERY == 0):
-                if status_cb:
-                    status_cb({"type": "message", "text": "usb refresh..."})
-                new_mon = iface_mod.refresh_external(iface_name)
-                if new_mon:
-                    mon = new_mon
-                    config.Runtime.monitor_iface = mon
-                else:
-                    tools.log("proactive refresh failed — recovering")
-                    recovered = iface_mod.recover_external_usb(wait=3.0, force=True)
-                    if not recovered:
-                        results["failed"].append(t.get("essid") or "?")
-                        break
-                    iface = recovered
-                    iface_name = iface_mod.iface_name(iface)
-                    mon = iface_mod.enable_monitor(iface_name) or iface_name
-                    config.Runtime.monitor_iface = mon
-                    _nm_set_managed(iface_name, False)
 
             emit(AttackEvent(EventType.TARGET, essid=t.get("essid"),
                              bssid=t.get("bssid"), current=i, total=total))
@@ -553,28 +522,20 @@ def run(iface, preset=None, progress_cb=None, status_cb=None, stop_flag=None):
                     # PIN-only: still try handshake below if WPA is enabled.
 
             if "pmkid" in req.attacks and pmkid_mod and not pmkid_adapter_dead:
-                # Reload before the first PMKID attempt and every few after
-                # that (same _REFRESH_EVERY cadence as the WPS proactive
-                # refresh above) — reloading before EVERY target wedges the
-                # RTL8822BU hard enough to need a full reboot, confirmed live.
-                force_reload = (pmkid_attempts == 0
-                               or pmkid_attempts % _REFRESH_EVERY == 0)
-                pmkid_attempts += 1
-                r = pmkid_mod.capture(mon, t, req, emit, stop_flag,
-                                      force_reload=force_reload)
+                # wifite-style: no rtw88 reload. hcxdumptool runs straight on the
+                # monitor iface; full driver reloads hard-wedge the RTL8822BU.
+                r = pmkid_mod.capture(mon, t, req, emit, stop_flag)
                 if "mon" in r:
                     if r["mon"]:
-                        # Reload can hand back a differently-named interface;
-                        # keep the shared `mon` in sync so wpa/wps attacks
-                        # later in this run use the real current name.
+                        # hcxdumptool leaves the iface in monitor; keep `mon`
+                        # in sync (harmless when the name is unchanged).
                         mon = r["mon"]
                         config.Runtime.monitor_iface = mon
                     else:
-                        # reload_managed failed — adapter didn't come back.
-                        # Stop attempting PMKID for the rest of this run
-                        # instead of retrying into a dead interface; wpa/wps
-                        # below will hit the same USB-recovery path if they
-                        # also need the card.
+                        # no monitor iface — adapter gone. Stop attempting
+                        # PMKID for the rest of this run instead of retrying
+                        # into a dead interface; wpa/wps below will hit the
+                        # same USB-recovery path if they also need the card.
                         tools.log("pmkid: adapter gone — disabling PMKID "
                                   "for rest of run %s" % run_id)
                         pmkid_adapter_dead = True
