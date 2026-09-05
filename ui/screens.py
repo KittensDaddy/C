@@ -7,6 +7,7 @@ import time
 from PIL import ImageFont
 
 import config
+from attack import scanner as sc
 from ui import theme
 from ui import cat
 from hardware import battery
@@ -130,6 +131,8 @@ class AttackStatus:
         self._cd_at = 0.0         # wall-clock when cur_countdown was set (live tick)
         self.scan_targets = 0     # live count while the engine is still scanning
         self.nets = []            # [{key, bssid, essid, signal, status, cred}]
+        self.wps_first = True     # sort list in the engine's WPS attack order
+        self._scan_started = False  # first live scan event clears the seeded list
         self.scroll = 0           # top visible scan-list row
         self._atk_key = None      # key currently marked "atk"
         self.started = False      # True once the engine emits its first real event
@@ -196,6 +199,9 @@ class AttackStatus:
         if t == "scan":
             # Live-growing scan list: merge each discovery into the row list so
             # the rows appear as they're found, not all at once at the end.
+            if not self._scan_started:
+                self._scan_started = True
+                self.nets = []      # fresh scan — drop seeded/stale rows
             self.scan_targets = ev.get("targets", 0)
             for item in (ev.get("found", []) or []):
                 self._add_scan(item)
@@ -278,12 +284,17 @@ class AttackStatus:
                 row["bssid"] = bssid or row["bssid"]
                 if item.get("signal") is not None:
                     row["signal"] = item["signal"]
+                if item.get("channel") is not None:
+                    row["channel"] = item["channel"]
+                if item.get("wps") is not None:
+                    row["wps"] = item["wps"]
                 return
         self.nets.append({
             "key": key,
             "essid": essid if not self._looks_like_mac(essid) else "",
             "bssid": bssid,
-            "signal": item.get("signal"), "status": ""})
+            "signal": item.get("signal"), "status": "",
+            "channel": item.get("channel"), "wps": item.get("wps")})
 
     def _clear_stale_fail(self):
         """Drop a prior failed/skipped status on the current target so a new
@@ -372,6 +383,8 @@ class AttackStatus:
     # -- scan list + scrolling --------------------------------------------
     def seed_scan(self, nets):
         """Preload the list from a scan already done (Scan & Attack)."""
+        self.nets = []
+        self._scan_started = False
         for n in (nets or []):
             self._add_scan(n)
 
@@ -386,9 +399,11 @@ class AttackStatus:
         return max(1, (config.HEIGHT - 15 - self.LIST_TOP) // self.ROW_H)
 
     def _ordered_nets(self):
-        """Sort by attack order = strongest signal first (same as the engine's
-        sort_by_signal)."""
-        return sorted(self.nets, key=lambda r: r.get("signal") or 0, reverse=True)
+        """Sort in the engine's attack order: WPS-first (2.4 GHz, then known
+        WPS, then signal) when WPS is running, else strongest signal."""
+        if self.wps_first:
+            return sc.sort_wps_first(list(self.nets))
+        return sc.sort_by_signal(list(self.nets))
 
     def _reveal_current(self):
         """Scroll so the row being attacked is on-screen."""

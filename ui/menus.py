@@ -550,6 +550,7 @@ def run_and_show(preset):
 
     st = AttackStatus("ATTACK")
     st.set_iface(name, drv)
+    st.wps_first = "wps" in req.attacks
     st.seed_scan(config.Runtime.last_scan)
     st.render()
     stop = threading.Event()
