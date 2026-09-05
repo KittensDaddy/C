@@ -9,6 +9,7 @@ never used — only the single-shot -K pixie attempt.
 import os
 import re
 import select
+import signal
 import subprocess
 import time
 
@@ -51,6 +52,41 @@ def _parse_creds(text):
     return pin, psk
 
 
+def _kill_group(proc):
+    """Kill `oneshot` AND its children. The binary never calls its own quit()
+    (oneshot.c:806), so its popen'd wpa_supplicant survives any normal exit or
+    SIGTERM of the parent and keeps holding the interface — the root cause of
+    the RTL8822BU hard-wedging after a few OneShot runs."""
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:  # noqa: BLE001
+        pgid = None
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            if pgid is not None:
+                os.killpg(pgid, sig)
+            else:
+                proc.terminate() if sig == signal.SIGTERM else proc.kill()
+            proc.wait(timeout=3)
+            return
+        except Exception:  # noqa: BLE001
+            if sig == signal.SIGKILL:
+                return
+
+
+def kill_leftover_wpas(iface):
+    """Safety net: pkill any wpa_supplicant still bound to `iface` (only ours
+    ever runs -K with that single-interface form)."""
+    if not iface:
+        return
+    try:
+        subprocess.run(
+            ["pkill", "-f", "wpa_supplicant .*-i%s " % iface],
+            timeout=5)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def run_pixie(iface, target, emit, stop_flag, timeout=60):
     """Managed-mode OneShot-C -K. Returns {ok, pin, psk, reason, t}."""
     bssid = target.get("bssid")
@@ -69,7 +105,7 @@ def run_pixie(iface, target, emit, stop_flag, timeout=60):
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1)
+            text=True, bufsize=1, start_new_session=True)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "reason": str(e)[:20], "t": 0.0}
 
@@ -117,14 +153,7 @@ def run_pixie(iface, target, emit, stop_flag, timeout=60):
         else:
             reason = "timeout"
     finally:
-        try:
-            proc.terminate()
-            proc.wait(timeout=3)
-        except Exception:  # noqa: BLE001
-            try:
-                proc.kill()
-            except Exception:  # noqa: BLE001
-                pass
+        _kill_group(proc)
 
     rest = ""
     try:

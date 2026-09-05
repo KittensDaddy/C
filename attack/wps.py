@@ -505,6 +505,10 @@ def pixie(mon, target, req, emit, stop_flag, run_id=None, iface_name=None):
         except Exception as e:  # noqa: BLE001
             o = {"ok": False, "reason": str(e)[:20], "t": 0.0}
         finally:
+            # oneshot leaks its wpa_supplicant (oneshot.c quit() is never
+            # called); make sure it's dead before re-entering monitor mode or
+            # the leftover process fights airmon-ng for the card and wedges it.
+            oneshot_wps.kill_leftover_wpas(managed)
             new_mon = _to_monitor(iface_name or managed or mon)
             if new_mon:
                 mon = new_mon
